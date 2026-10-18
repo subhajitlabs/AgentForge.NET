@@ -3,6 +3,8 @@
 Status: Approved with amendments  
 Last updated: 2026-10-18
 
+Phase 2 Increment 7 adds a thin Hosting-owned `IAgent` facade and keyed named-agent registration. Each facade binds one immutable `AgentDefinition` and delegates to the existing buffered and streaming runtimes. It introduces no second execution loop, provider routing, implicit agent, memory, or automatic tool authorization. Duplicate keys fail during registration; model-client cardinality and allowed-tool existence fail on first resolution before provider invocation.
+
 ## 1. Purpose
 
 AgentForge.NET is an in-process, developer-first runtime for building reliable AI agents with idiomatic C# and .NET. It coordinates a language model, an explicitly permitted set of tools, and conversation state through a bounded execution loop. Provider SDKs, hosting, telemetry exporters, and future persistence implementations remain replaceable adapters around that loop.

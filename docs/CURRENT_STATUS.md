@@ -1,11 +1,21 @@
 # AgentForge.NET Current Status
 
 Status date: 2026-10-18  
-Current milestone: Phase 2 Increment 6 (Microsoft.Extensions.AI Interoperability) complete; later increments not authorized
+Current milestone: Phase 2 Increment 7 (Ergonomic Agent API and Samples) complete; Increment 8 not authorized
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
 This document describes the implementation currently present in this repository. Items under **Verified** were exercised locally using the commands and environment recorded below. Design goals and future work are not presented as implemented behavior.
+
+## Verified Phase 2 Increment 7 implementation
+
+- `IAgent` exposes the approved immutable `Definition`, buffered `RunAsync(string)`, and streaming `StreamAsync(string)` surface.
+- `AddAgentDefinition(name, configure)` builds the existing immutable `AgentDefinition` and registers a keyed singleton facade. There is no unkeyed fallback or `IAgentFactory`.
+- The facade creates one fresh `AgentRunRequest` and `UserMessage` per invocation and delegates unchanged to `IAgentRuntime` or `IStreamingAgentRuntime`.
+- Duplicate names fail during registration. Missing keys do not fall back. Unknown allowed tools and model-client cardinality other than exactly one fail on first resolution before provider invocation.
+- Tool registration remains distinct from per-agent authorization; limits, atomic validation, sequential execution, cancellation, results, and events remain owned by the existing runtime.
+- The calculator sample demonstrates named resolution and a typed explicitly allowed tool while retaining its established output. Separate deterministic streaming and Microsoft.Extensions.AI samples compile and run offline. The OpenAI sample is opt-in through `OPENAI_API_KEY` and `OPENAI_MODEL` and is not run by default.
+- No live provider verification, routing, fallback, retry, memory, persistence, graph, multi-agent, or Increment 8 behavior was added.
 
 ## Verified Phase 2 Increment 6 implementation
 
@@ -224,11 +234,11 @@ dotnet test AgentForge.slnx --configuration Release --no-build
 Result:
 
 ```text
-Passed!  - Failed: 0, Passed: 180, Skipped: 0, Total: 180
+Passed!  - Failed: 0, Passed: 189, Skipped: 0, Total: 189
 Target: .NETCoreApp,Version=v10.0
 ```
 
-The 180 tests include 95 Core/runtime tests, 30 typed-tool tests, 32 OpenAI provider tests, and 23 Microsoft.Extensions.AI adapter tests. Adapter coverage uses scripted in-memory `IChatClient` implementations and covers transcript/schema/correlation mapping, declaration-only tools, buffered and streaming finish semantics, usage, malformed/mixed content and function arguments, JSON ownership, redaction, cancellation, disposal, capability failure, concurrency, DI conflicts, and absence of retries.
+The 189 tests include 104 Core/runtime/Hosting tests, 30 typed-tool tests, 32 OpenAI provider tests, and 23 Microsoft.Extensions.AI adapter tests. Hosting coverage includes buffered and streaming facade delegation, fresh execution state, cancellation, keyed isolation, duplicate/missing keys, unknown tools, multiple-client rejection, and unsupported streaming. Adapter coverage uses scripted in-memory clients and remains network-free.
 
 Console sample:
 
@@ -299,4 +309,4 @@ None of these outstanding issues invalidate the verified Phase 1 acceptance resu
 
 ## Next recommended task
 
-Stop after Increment 6. Perform architectural review of the interoperability adapter, especially stream terminal semantics, declaration-only tool ownership, and the unsupported auto-invoking middleware boundary. Increment 7 must not begin without explicit approval.
+Stop after Increment 7. Perform architectural review of the keyed facade, first-resolution validation timing, model-client cardinality rule, and sample boundaries. Increment 8 live verification must not begin without explicit approval.

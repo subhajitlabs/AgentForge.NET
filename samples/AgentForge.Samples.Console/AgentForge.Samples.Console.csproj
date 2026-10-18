@@ -7,6 +7,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\AgentForge.Abstractions\AgentForge.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\AgentForge.Hosting\AgentForge.Hosting.csproj" />
+    <ProjectReference Include="..\..\src\AgentForge.Tools\AgentForge.Tools.csproj" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
   </ItemGroup>
 

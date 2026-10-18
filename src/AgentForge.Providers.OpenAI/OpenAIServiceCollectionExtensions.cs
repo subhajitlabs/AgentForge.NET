@@ -24,6 +24,7 @@ public static class OpenAIServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(clientFactory);
+        EnsureNoModelClient(services);
         services.AddSingleton(provider => new OpenAIAgentModelClient(clientFactory(provider)));
         services.AddSingleton<IAgentModelClient>(provider => provider.GetRequiredService<OpenAIAgentModelClient>());
         services.AddSingleton<IStreamingAgentModelClient>(provider => provider.GetRequiredService<OpenAIAgentModelClient>());
@@ -32,9 +33,17 @@ public static class OpenAIServiceCollectionExtensions
 
     private static IServiceCollection AddClient(IServiceCollection services, OpenAIAgentModelClient client)
     {
+        EnsureNoModelClient(services);
         services.AddSingleton(client);
         services.AddSingleton<IAgentModelClient>(client);
         services.AddSingleton<IStreamingAgentModelClient>(client);
         return services;
+    }
+
+    private static void EnsureNoModelClient(IServiceCollection services)
+    {
+        if (services.Any(descriptor => descriptor.ServiceType == typeof(IAgentModelClient)
+            || descriptor.ServiceType == typeof(IStreamingAgentModelClient)))
+            throw new InvalidOperationException("An AgentForge model client is already registered.");
     }
 }

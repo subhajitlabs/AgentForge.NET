@@ -6,6 +6,9 @@
   </Configurations>
   <Folder Name="/samples/">
     <Project Path="samples/AgentForge.Samples.Console/AgentForge.Samples.Console.csproj" />
+    <Project Path="samples/AgentForge.Samples.Streaming/AgentForge.Samples.Streaming.csproj" />
+    <Project Path="samples/AgentForge.Samples.OpenAI/AgentForge.Samples.OpenAI.csproj" />
+    <Project Path="samples/AgentForge.Samples.MicrosoftExtensionsAI/AgentForge.Samples.MicrosoftExtensionsAI.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/AgentForge.Abstractions/AgentForge.Abstractions.csproj" />
