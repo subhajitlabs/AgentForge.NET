@@ -1,0 +1,18 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/samples/">
+    <Project Path="samples/AgentForge.Samples.Console/AgentForge.Samples.Console.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/AgentForge.Abstractions/AgentForge.Abstractions.csproj" />
+    <Project Path="src/AgentForge.Core/AgentForge.Core.csproj" />
+    <Project Path="src/AgentForge.Hosting/AgentForge.Hosting.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AgentForge.Core.Tests/AgentForge.Core.Tests.csproj" />
+  </Folder>
+</Solution>
