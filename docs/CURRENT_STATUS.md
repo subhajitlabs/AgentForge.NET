@@ -7,6 +7,10 @@ Verification SDK: 10.0.402
 
 This document describes the implementation currently present in this repository. Items under **Verified** were exercised locally using the commands and environment recorded below. Design goals and future work are not presented as implemented behavior.
 
+## Phase 2 Increment 5 investigation
+
+The documentation-only Increment 5 SDK investigation is complete. It recommends official OpenAI .NET SDK 2.14.0, confirms deterministic JSON/SSE testing through the public `ResponsesClientOptions.Transport` and `HttpClientPipelineTransport` seam, defines explicit Responses status/event/tool/error mappings, and records a **READY** verdict. See [`PHASE2_INCREMENT5_INVESTIGATION.md`](PHASE2_INCREMENT5_INVESTIGATION.md). This investigation does not authorize or represent an implemented OpenAI provider; the baseline remains Phase 2 Increment 4 with 125 passing tests.
+
 ## Verified Phase 2 Increment 4 implementation
 
 - `AgentForge.Tools` provides `AgentTool.Create<TArguments, TResult>` and immutable `ToolExecutionContext` for strongly typed delegate tools without Core or Hosting dependencies.
