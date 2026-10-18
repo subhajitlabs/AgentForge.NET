@@ -14,7 +14,9 @@ public static class ServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         services.AddSingleton<IAgentToolRegistry, AgentToolRegistry>();
-        services.AddSingleton<IAgentRuntime, AgentRuntime>();
+        services.AddSingleton<AgentRuntime>();
+        services.AddSingleton<IAgentRuntime>(provider => provider.GetRequiredService<AgentRuntime>());
+        services.AddSingleton<IStreamingAgentRuntime>(provider => provider.GetRequiredService<AgentRuntime>());
         return services;
     }
 

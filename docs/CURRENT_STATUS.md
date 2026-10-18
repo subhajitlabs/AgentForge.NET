@@ -1,7 +1,7 @@
 # AgentForge.NET Current Status
 
 Status date: 2026-10-18  
-Current milestone: Phase 2 Increment 1 (Finish Reasons) complete; later increments not authorized
+Current milestone: Phase 2 Increment 3 (Provider-Neutral Streaming) complete; later increments not authorized
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
@@ -9,7 +9,30 @@ This document describes the implementation currently present in this repository.
 
 ## Verified Phase 1 implementation
 
-All Phase 1 guarantees described below remain verified after the Increment 1 migration.
+All Phase 1 guarantees described below remain verified after the Increment 3 streaming addition.
+
+## Verified Phase 2 Increment 3 implementation
+
+- `IStreamingAgentModelClient` adds an optional provider capability that streams immutable `ModelTextDelta` events followed by one authoritative `ModelResponseCompleted`.
+- `IStreamingAgentRuntime` streams immutable `AssistantTextDelta` events and emits exactly one authoritative `AgentRunCompleted` on success.
+- `AgentRuntime` implements both runtime interfaces while preserving the existing `IAgentRuntime.RunAsync` contract and behavior.
+- Streaming and non-streaming calls use the same internal `AgentExecutionEngine` orchestration loop and therefore share request validation, allow-list enforcement, model/tool budgets, transcript ownership, finish-reason policy, usage accounting, atomic tool-batch prevalidation, sequential tool execution, cancellation checks, and error translation.
+- Core defensively rejects missing or repeated terminal completion, null or unknown events, events after completion, invalid deltas, malformed terminal responses, and text deltas associated with a tool-call response.
+- Core consumes each provider stream through natural termination before accepting its terminal response. Tool execution cannot begin until the complete stream ends cleanly and the entire tool batch passes existing prevalidation.
+- Streamed text is provisional. Provider, policy, tool, or cancellation failure after text emits no `AgentRunCompleted`.
+- Runtime event delivery uses cancellation-linked, acknowledged backpressure. Early consumer disposal cancels local execution before it can advance to later provider events or tool execution. This does not guarantee cancellation of remote work already accepted by a provider.
+- `CapabilityNotSupported` identifies streaming requests made against a model client that does not implement `IStreamingAgentModelClient`; failure occurs before provider invocation.
+- `ScriptedStreamingAgentModelClient` provides deterministic offline streaming turns for tests.
+- `AddAgentForge()` exposes the same `AgentRuntime` singleton through both `IAgentRuntime` and `IStreamingAgentRuntime`.
+- No real provider, typed-tool package, Microsoft.Extensions.AI integration, facade, retry, persistence, parallel execution, or other later-increment capability was added.
+
+## Verified Phase 2 Increment 2 implementation
+
+- `AgentRuntime` remains the unchanged public `IAgentRuntime.RunAsync` entry point and delegates execution to an internal `AgentExecutionEngine`.
+- The internal engine owns the single orchestration loop and centralizes request and allow-list validation, run-local state, model/tool counters, transcript construction, response and finish-reason validation, usage accounting, atomic tool-batch prevalidation, sequential tool execution, cancellation checks, and provider/tool error translation.
+- Each execution owns an isolated internal context containing its execution ID, immutable input-derived tool policy and descriptors, transcript, counters, aggregate usage, and execution-wide tool-call ID set.
+- Model invocation is supplied to the engine as an internal asynchronous turn delegate. A future streaming path can consume provider events inside such a delegate and return the authoritative terminal `ModelResponse` to the same loop; it will therefore reuse the engine's limits, authorization, validation, accounting, transcript, tool execution, cancellation, and error policies.
+- No streaming contracts or implementation, public APIs, packages, provider adapters, typed tools, retries, persistence, parallel execution, or other later-increment capabilities were added.
 
 ## Verified Phase 2 Increment 1 implementation
 
@@ -30,7 +53,7 @@ All Phase 1 guarantees described below remain verified after the Increment 1 mig
 
 ### Runtime and execution lifecycle
 
-- A single-agent, in-process execution loop is implemented by `AgentRuntime`.
+- A single-agent, in-process execution loop is implemented by the internal `AgentExecutionEngine`; `AgentRuntime` is the public facade over it.
 - Each run receives a generated `ExecutionId` and owns an isolated transcript and counters.
 - The runtime prepends the agent's system instructions to the supplied user messages.
 - The runtime repeatedly invokes one `IAgentModelClient` until it receives a terminal assistant text response or fails.
@@ -163,11 +186,11 @@ dotnet test AgentForge.slnx --configuration Release --no-build
 Result:
 
 ```text
-Passed!  - Failed: 0, Passed: 60, Skipped: 0, Total: 60
+Passed!  - Failed: 0, Passed: 95, Skipped: 0, Total: 95
 Target: .NETCoreApp,Version=v10.0
 ```
 
-The 60 tests retain all Phase 1 coverage and add deterministic coverage for both response factories, every finish reason, valid empty/partial failure content, invalid message/reason combinations, undefined enum values, exact execution error codes, provider-reported cancellation, and caller-triggered cancellation.
+The 95 tests retain all 60 Phase 1 and Increment 1-2 tests and add deterministic streaming coverage for successful deltas and zero-delta completion, tool round-trips, usage/transcript accounting, non-streaming parity, capability detection, provider protocol violations, malformed responses, partial provider failures, authorization, atomic batch rejection, execution-wide call-ID uniqueness, model/tool limits, cancellation boundaries, cancellation-ignoring providers, early consumer disposal, finish-reason failures, concurrent-run isolation, redaction, and Hosting registration.
 
 Console sample:
 
@@ -182,7 +205,7 @@ Result:
 Model calls: 2; Tool calls: 1
 ```
 
-These results verify the Phase 1 implementation and Phase 2 Increment 1 on the listed SDK and local Windows environment. They do not verify behavior on other operating systems, other SDK patches, external model providers, streaming, or distributed infrastructure.
+These results verify the Phase 1 implementation and Phase 2 Increments 1-3 on the listed SDK and local Windows environment. They do not verify behavior on other operating systems, other SDK patches, external model providers, or distributed infrastructure.
 
 ## Unimplemented features
 
@@ -190,7 +213,7 @@ The following are intentionally not implemented and have not been verified:
 
 - Real OpenAI or other networked LLM providers.
 - Microsoft.Extensions.AI adapters.
-- Streaming model responses or streaming tool output.
+- Streaming tool output.
 - Multi-agent orchestration, handoffs, supervisors, or teams.
 - Graph/DAG workflows, branches, fan-out, or fan-in.
 - Durable execution, checkpoints, resume, idempotency journals, or background workers.
@@ -213,6 +236,8 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 - Tool descriptors and implementations are trusted application configuration. Tool code can access all permissions available to the host process.
 - Tool calls execute sequentially. There is no opt-in declaration for read-only or concurrency-safe tools.
 - Failures stop execution immediately. No recovery state or partial transcript is returned to the caller.
+- Streaming text deltas are provisional and are not returned as recovery state after failure.
+- Stream cancellation is cooperative. Local disposal prevents later Core work, but cannot guarantee cancellation of remote work already accepted by a provider.
 - The scripted model client is a deterministic development/test component and does not demonstrate provider protocol compatibility.
 - Metadata-only structured logging and redaction are regression tested, but there is no dedicated telemetry package or configurable content-capture policy.
 - The repository-local `.dotnet-home` directory is an ignored CLI artifact and is not product source.
@@ -221,8 +246,7 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 
 - There is no CI workflow to reproduce the local .NET 10 build and test evidence.
 - Public API compatibility is not yet tracked with an API baseline tool.
-- Provider capability negotiation beyond interface-based future streaming detection is not implemented.
-- Streaming event types, cancellation after partial output, and partial-failure semantics are not designed.
+- Provider capability negotiation beyond the implemented `IStreamingAgentModelClient` interface check is not implemented.
 - Usage normalization across providers is not defined.
 - Content logging/redaction remains deny-by-default but has no configurable policy model.
 - Integration tests do not exist because Phase 1 contains no external adapter.
@@ -231,4 +255,4 @@ None of these outstanding issues invalidate the verified Phase 1 acceptance resu
 
 ## Next recommended task
 
-Stop after Increment 1. The next recommended task is a read-only review of the finish-reason public contract and runtime behavior, followed—only with explicit approval—by Phase 2 Increment 2, the internal execution-engine extraction. Increment 2 must preserve observable Phase 1 and Increment 1 behavior and must not introduce streaming or provider functionality.
+Stop after Increment 3. The next recommended task is a rigorous read-only review of the provider-neutral streaming contracts, shared-engine implementation, protocol validation, and cancellation/disposal behavior. Phase 2 Increment 4 must not begin without explicit approval.

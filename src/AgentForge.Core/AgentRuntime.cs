@@ -1,16 +1,16 @@
-using System.Text.Json;
 using AgentForge.Abstractions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 
 namespace AgentForge.Core;
 
 /// <summary>Default deterministic single-agent runtime.</summary>
-public sealed class AgentRuntime : IAgentRuntime
+public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
 {
     private readonly IAgentModelClient _modelClient;
-    private readonly IAgentToolRegistry _toolRegistry;
-    private readonly ILogger<AgentRuntime> _logger;
+    private readonly AgentExecutionEngine _executionEngine;
 
     /// <summary>Creates the runtime.</summary>
     /// <param name="modelClient">The provider-neutral model client.</param>
@@ -22,285 +22,183 @@ public sealed class AgentRuntime : IAgentRuntime
         ILogger<AgentRuntime>? logger = null)
     {
         _modelClient = modelClient ?? throw new ArgumentNullException(nameof(modelClient));
-        _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
-        _logger = logger ?? NullLogger<AgentRuntime>.Instance;
+        ArgumentNullException.ThrowIfNull(toolRegistry);
+        _executionEngine = new AgentExecutionEngine(toolRegistry, logger ?? NullLogger<AgentRuntime>.Instance);
     }
 
     /// <inheritdoc />
-    public async Task<AgentRunResult> RunAsync(
+    public Task<AgentRunResult> RunAsync(
         AgentRunRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        _executionEngine.ExecuteAsync(
+            request,
+            (modelRequest, token) => _modelClient.CompleteAsync(modelRequest, token),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public async IAsyncEnumerable<AgentRunEvent> StreamAsync(
+        AgentRunRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        ValidateRequest(request);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var executionId = ExecutionId.New();
-        var allowedTools = new HashSet<string>(request.Agent.AllowedTools, StringComparer.Ordinal);
-        ValidateAllowedTools(allowedTools);
-        var descriptors = _toolRegistry.Describe(allowedTools);
-        var transcript = new List<AgentMessage>(request.Messages.Count + 4)
+        using var executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var events = Channel.CreateUnbounded<StreamEnvelope>(new UnboundedChannelOptions
         {
-            new SystemMessage(request.Agent.Instructions)
-        };
-        transcript.AddRange(request.Messages);
+            SingleReader = true,
+            SingleWriter = true,
+            AllowSynchronousContinuations = false
+        });
+        var execution = ProduceStreamingEventsAsync(
+            request,
+            events.Writer,
+            executionCancellation.Token);
 
-        var modelCalls = 0;
-        var toolCalls = 0;
-        long inputTokens = 0;
-        long outputTokens = 0;
-        var hasUsage = false;
-        var seenToolCallIds = new HashSet<string>(StringComparer.Ordinal);
-
-        _logger.LogInformation(
-            "Agent execution {ExecutionId} started for agent {AgentId} using model {ModelId}",
-            executionId, request.Agent.Id, request.Agent.Model);
-
-        while (true)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (modelCalls >= request.Agent.Limits.MaxModelCalls)
+            StreamEnvelope? pending = null;
+            while (await events.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                throw PolicyError(
-                    AgentExecutionErrorCode.ModelCallLimitExceeded,
-                    executionId,
-                    "The model-call limit was reached before completion.");
+                if (!events.Reader.TryRead(out pending))
+                    continue;
+                yield return pending.Event;
+                pending.Acknowledge();
+                pending = null;
             }
-
-            var modelRequest = new ModelRequest(
-                executionId,
-                request.Agent.Model,
-                transcript.ToArray(),
-                descriptors);
-
-            ModelResponse response;
+        }
+        finally
+        {
+            executionCancellation.Cancel();
             try
             {
-                response = await _modelClient.CompleteAsync(modelRequest, cancellationToken).ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
-                modelCalls++;
+                await execution.ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (executionCancellation.IsCancellationRequested)
             {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                throw new AgentProviderException(
-                    executionId,
-                    $"The model provider failed during execution '{executionId}'.",
-                    exception);
-            }
-
-            ValidateResponse(response, executionId);
-            EnforceFinishReason(response.FinishReason, executionId, cancellationToken);
-            if (response.Usage is not null)
-            {
-                hasUsage = true;
-                try
-                {
-                    inputTokens = checked(inputTokens + response.Usage.InputTokens);
-                    outputTokens = checked(outputTokens + response.Usage.OutputTokens);
-                    _ = checked(inputTokens + outputTokens);
-                }
-                catch (OverflowException exception)
-                {
-                    throw new AgentExecutionException(
-                        AgentExecutionErrorCode.InvalidModelResponse,
-                        executionId,
-                        "The model response contains usage values that exceed supported limits.",
-                        exception);
-                }
-            }
-
-            var validated = response.Message.ToolCalls.Count == 0
-                ? Array.Empty<ValidatedToolCall>()
-                : PrevalidateToolBatch(
-                    response.Message.ToolCalls,
-                    allowedTools,
-                    seenToolCallIds,
-                    request.Agent.Limits.MaxToolCalls - toolCalls,
-                    executionId);
-            var assistantMessage = CloneAssistantMessage(response.Message);
-            transcript.Add(assistantMessage);
-
-            if (assistantMessage.ToolCalls.Count == 0)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                _logger.LogInformation(
-                    "Agent execution {ExecutionId} completed after {ModelCalls} model calls and {ToolCalls} tool calls",
-                    executionId, modelCalls, toolCalls);
-                return new AgentRunResult(
-                    executionId,
-                    assistantMessage,
-                    transcript.ToArray(),
-                    hasUsage ? new ModelUsage(inputTokens, outputTokens) : null,
-                    modelCalls,
-                    toolCalls);
-            }
-
-            foreach (var item in validated)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                ToolResult? result;
-                try
-                {
-                    result = await item.Tool.InvokeAsync(
-                        new ToolInvocation(executionId, item.Call.Id, item.Call.Arguments),
-                        cancellationToken).ConfigureAwait(false);
-                    cancellationToken.ThrowIfCancellationRequested();
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception exception)
-                {
-                    throw new AgentToolException(
-                        executionId,
-                        item.Call.Name,
-                        item.Call.Id,
-                        $"A tool failed during execution '{executionId}'.",
-                        exception);
-                }
-
-                if (result is null || result.Value.ValueKind == JsonValueKind.Undefined)
-                {
-                    throw new AgentToolException(
-                        executionId,
-                        item.Call.Name,
-                        item.Call.Id,
-                        $"A tool returned an invalid result during execution '{executionId}'.",
-                        new InvalidOperationException("A tool result must be non-null and contain a valid JSON value."));
-                }
-
-                transcript.Add(new ToolResultMessage(item.Call.Id, item.Call.Name, result.Value));
-                toolCalls++;
+                // Early iterator disposal cancels local execution without surfacing disposal as failure.
             }
         }
     }
 
-    private static void ValidateRequest(AgentRunRequest request)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(request.Agent);
-        ArgumentNullException.ThrowIfNull(request.Messages);
-        ArgumentNullException.ThrowIfNull(request.Agent.AllowedTools);
-        ArgumentNullException.ThrowIfNull(request.Agent.Limits);
-        if (string.IsNullOrWhiteSpace(request.Agent.Id.Value))
-            throw new ArgumentException("Agent ID cannot be empty.", nameof(request));
-        if (string.IsNullOrWhiteSpace(request.Agent.Model.Value))
-            throw new ArgumentException("Model ID cannot be empty.", nameof(request));
-        if (string.IsNullOrWhiteSpace(request.Agent.Instructions))
-            throw new ArgumentException("Agent instructions cannot be empty.", nameof(request));
-        if (request.Agent.Limits.MaxModelCalls <= 0)
-            throw new ArgumentOutOfRangeException(nameof(request), "MaxModelCalls must be positive.");
-        if (request.Agent.Limits.MaxToolCalls <= 0)
-            throw new ArgumentOutOfRangeException(nameof(request), "MaxToolCalls must be positive.");
-        if (request.Messages.Count == 0 || request.Messages.Any(message => message is not UserMessage user || string.IsNullOrWhiteSpace(user.Text)))
-            throw new ArgumentException("Initial messages must contain one or more non-empty user messages.", nameof(request));
-    }
-
-    private void ValidateAllowedTools(IReadOnlySet<string> allowedTools)
-    {
-        foreach (var name in allowedTools)
-        {
-            if (string.IsNullOrWhiteSpace(name))
-                throw new ArgumentException("Allowed tool names cannot be empty.", nameof(allowedTools));
-            if (!_toolRegistry.TryResolve(name, out _))
-                throw new ArgumentException("Every allowed tool must be registered.", nameof(allowedTools));
-        }
-    }
-
-    private static void ValidateResponse(ModelResponse? response, ExecutionId executionId)
-    {
-        if (response?.Message is null)
-            throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "The model response must contain one assistant message.");
-
-        if (response.Message.ToolCalls is null)
-            throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "The assistant tool-call collection cannot be null.");
-
-        var hasText = !string.IsNullOrWhiteSpace(response.Message.Text);
-        var hasToolCalls = response.Message.ToolCalls is { Count: > 0 };
-        var invalidCombination = response.FinishReason switch
-        {
-            ModelFinishReason.Completed => !hasText || hasToolCalls,
-            ModelFinishReason.ToolCalls => hasText || !hasToolCalls,
-            ModelFinishReason.LengthLimit or ModelFinishReason.ContentFiltered or ModelFinishReason.Refused => hasToolCalls,
-            ModelFinishReason.Cancelled => hasText || hasToolCalls,
-            ModelFinishReason.Unknown => hasToolCalls,
-            _ => true
-        };
-        if (invalidCombination)
-            throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "The assistant message is incompatible with the model finish reason.");
-        if (response.Usage is { InputTokens: < 0 } or { OutputTokens: < 0 })
-            throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "Model usage values cannot be negative.");
-    }
-
-    private static void EnforceFinishReason(
-        ModelFinishReason finishReason,
-        ExecutionId executionId,
+    private async Task ProduceStreamingEventsAsync(
+        AgentRunRequest request,
+        ChannelWriter<StreamEnvelope> writer,
         CancellationToken cancellationToken)
     {
-        switch (finishReason)
+        try
         {
-            case ModelFinishReason.Completed:
-            case ModelFinishReason.ToolCalls:
-                return;
-            case ModelFinishReason.LengthLimit:
-                throw PolicyError(AgentExecutionErrorCode.ModelOutputIncomplete, executionId, "The model output ended before completion.");
-            case ModelFinishReason.ContentFiltered:
-                throw PolicyError(AgentExecutionErrorCode.ModelOutputFiltered, executionId, "The model output was filtered.");
-            case ModelFinishReason.Refused:
-                throw PolicyError(AgentExecutionErrorCode.ModelRefused, executionId, "The model refused the request.");
-            case ModelFinishReason.Cancelled:
-                cancellationToken.ThrowIfCancellationRequested();
-                throw new AgentProviderException(
-                    executionId,
-                    $"The model provider reported cancellation during execution '{executionId}'.",
-                    new InvalidOperationException("The provider reported cancellation without caller cancellation."));
-            case ModelFinishReason.Unknown:
-            default:
-                throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "The model returned an unsupported finish reason.");
+            var result = await _executionEngine.ExecuteAsync(
+                request,
+                (modelRequest, token) => StreamModelTurnAsync(
+                    modelRequest,
+                    (text, callbackToken) => WriteEventAsync(
+                        writer,
+                        new AssistantTextDelta(text),
+                        callbackToken),
+                    token),
+                cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await WriteEventAsync(writer, new AgentRunCompleted(result), cancellationToken).ConfigureAwait(false);
+            writer.TryComplete();
+        }
+        catch (Exception exception)
+        {
+            writer.TryComplete(exception);
+            throw;
         }
     }
 
-    private IReadOnlyList<ValidatedToolCall> PrevalidateToolBatch(
-        IReadOnlyList<ToolCall> calls,
-        IReadOnlySet<string> allowedTools,
-        HashSet<string> seenToolCallIds,
-        int remainingBudget,
-        ExecutionId executionId)
+    private static async ValueTask WriteEventAsync(
+        ChannelWriter<StreamEnvelope> writer,
+        AgentRunEvent runEvent,
+        CancellationToken cancellationToken)
     {
-        if (calls.Count > remainingBudget)
-            throw PolicyError(AgentExecutionErrorCode.ToolCallLimitExceeded, executionId, "The requested tool batch exceeds the remaining tool-call budget.");
-
-        var callIds = new HashSet<string>(seenToolCallIds, StringComparer.Ordinal);
-        var validated = new List<ValidatedToolCall>(calls.Count);
-        foreach (var call in calls)
-        {
-            if (call is null || string.IsNullOrWhiteSpace(call.Id) || string.IsNullOrWhiteSpace(call.Name) || call.Arguments.ValueKind == JsonValueKind.Undefined)
-                throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "Every tool call requires an ID, name, and valid JSON arguments.");
-            if (!callIds.Add(call.Id))
-                throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "The model response contains a duplicate tool-call identifier.");
-            if (!allowedTools.Contains(call.Name))
-                throw PolicyError(AgentExecutionErrorCode.ToolNotAllowed, executionId, "The model requested a tool that is not allowed for this agent.");
-            if (!_toolRegistry.TryResolve(call.Name, out var tool) || tool is null)
-                throw PolicyError(AgentExecutionErrorCode.ToolNotFound, executionId, "The model requested a tool that is not registered.");
-            validated.Add(new ValidatedToolCall(call, tool));
-        }
-
-        seenToolCallIds.UnionWith(calls.Select(call => call.Id));
-
-        return validated;
+        var envelope = new StreamEnvelope(runEvent);
+        await writer.WriteAsync(envelope, cancellationToken).ConfigureAwait(false);
+        await envelope.WaitForAcknowledgementAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static AssistantMessage CloneAssistantMessage(AssistantMessage message) =>
-        new(message.Text, message.ToolCalls.Select(call => new ToolCall(call.Id, call.Name, call.Arguments)));
+    private async Task<ModelResponse> StreamModelTurnAsync(
+        ModelRequest request,
+        Func<string, CancellationToken, ValueTask> emitTextAsync,
+        CancellationToken cancellationToken)
+    {
+        if (_modelClient is not IStreamingAgentModelClient streamingClient)
+        {
+            throw new AgentExecutionEngine.ModelTurnRejectedException(
+                AgentExecutionErrorCode.CapabilityNotSupported,
+                "The configured model client does not support streaming.");
+        }
 
-    private static AgentExecutionException PolicyError(
-        AgentExecutionErrorCode code,
-        ExecutionId executionId,
-        string message) => new(code, executionId, message);
+        var stream = streamingClient.StreamAsync(request, cancellationToken);
+        if (stream is null)
+        {
+            throw new AgentExecutionEngine.ModelTurnRejectedException(
+                AgentExecutionErrorCode.InvalidModelResponse,
+                "The model provider returned an invalid stream.");
+        }
 
-    private sealed record ValidatedToolCall(ToolCall Call, IAgentTool Tool);
+        ModelResponse? response = null;
+        var emittedText = false;
+        await using var enumerator = stream.GetAsyncEnumerator(cancellationToken);
+        while (await enumerator.MoveNextAsync().ConfigureAwait(false))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var streamEvent = enumerator.Current;
+            if (response is not null)
+            {
+                throw new AgentExecutionEngine.ModelTurnRejectedException(
+                    AgentExecutionErrorCode.InvalidModelResponse,
+                    "The model stream contained an event after its terminal completion.");
+            }
+
+            switch (streamEvent)
+            {
+                case ModelTextDelta delta when !string.IsNullOrEmpty(delta.Text):
+                    emittedText = true;
+                    await emitTextAsync(delta.Text, cancellationToken).ConfigureAwait(false);
+                    break;
+                case ModelTextDelta:
+                    throw new AgentExecutionEngine.ModelTurnRejectedException(
+                        AgentExecutionErrorCode.InvalidModelResponse,
+                        "The model stream contained an invalid text delta.");
+                case ModelResponseCompleted completed when completed.Response is not null:
+                    response = completed.Response;
+                    break;
+                case ModelResponseCompleted:
+                case null:
+                default:
+                    throw new AgentExecutionEngine.ModelTurnRejectedException(
+                        AgentExecutionErrorCode.InvalidModelResponse,
+                        "The model stream contained an invalid event.");
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (response is null)
+        {
+            throw new AgentExecutionEngine.ModelTurnRejectedException(
+                AgentExecutionErrorCode.InvalidModelResponse,
+                "The model stream ended without a terminal completion.");
+        }
+        if (emittedText && response.FinishReason == ModelFinishReason.ToolCalls)
+        {
+            throw new AgentExecutionEngine.ModelTurnRejectedException(
+                AgentExecutionErrorCode.InvalidModelResponse,
+                "The model stream emitted text for a tool-call response.");
+        }
+
+        return response;
+    }
+
+    private sealed class StreamEnvelope(AgentRunEvent runEvent)
+    {
+        private readonly TaskCompletionSource _acknowledged =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public AgentRunEvent Event { get; } = runEvent;
+
+        public void Acknowledge() => _acknowledged.TrySetResult();
+
+        public Task WaitForAcknowledgementAsync(CancellationToken cancellationToken) =>
+            _acknowledged.Task.WaitAsync(cancellationToken);
+    }
 }

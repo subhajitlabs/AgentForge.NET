@@ -18,7 +18,9 @@ public enum AgentExecutionErrorCode
     /// <summary>The model output was blocked by content filtering.</summary>
     ModelOutputFiltered,
     /// <summary>The model refused the request.</summary>
-    ModelRefused
+    ModelRefused,
+    /// <summary>The configured model client does not support the requested capability.</summary>
+    CapabilityNotSupported
 }
 
 /// <summary>A runtime policy or model-contract violation.</summary>
