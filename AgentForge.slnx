@@ -11,8 +11,10 @@
     <Project Path="src/AgentForge.Abstractions/AgentForge.Abstractions.csproj" />
     <Project Path="src/AgentForge.Core/AgentForge.Core.csproj" />
     <Project Path="src/AgentForge.Hosting/AgentForge.Hosting.csproj" />
+    <Project Path="src/AgentForge.Tools/AgentForge.Tools.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AgentForge.Core.Tests/AgentForge.Core.Tests.csproj" />
+    <Project Path="tests/AgentForge.Tools.Tests/AgentForge.Tools.Tests.csproj" />
   </Folder>
 </Solution>

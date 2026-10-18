@@ -1,15 +1,27 @@
 # AgentForge.NET Current Status
 
 Status date: 2026-10-18  
-Current milestone: Phase 2 Increment 3 (Provider-Neutral Streaming) complete; later increments not authorized
+Current milestone: Phase 2 Increment 4 (Typed Tools) complete; later increments not authorized
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
 This document describes the implementation currently present in this repository. Items under **Verified** were exercised locally using the commands and environment recorded below. Design goals and future work are not presented as implemented behavior.
 
+## Verified Phase 2 Increment 4 implementation
+
+- `AgentForge.Tools` provides `AgentTool.Create<TArguments, TResult>` and immutable `ToolExecutionContext` for strongly typed delegate tools without Core or Hosting dependencies.
+- Registration clones and freezes `JsonSerializerOptions`, resolves one argument and result `JsonTypeInfo`, exports the argument schema through the .NET 10 JSON schema API, closes object schemas to unknown properties, and retains the same frozen metadata for validation and invocation.
+- The supported argument subset includes sealed POCOs and records, strings, booleans, integral/floating-point numbers and decimals, nullable values, string enums, arrays, `List<T>`, and nested supported objects.
+- Registration rejects non-object roots, `object`, delegates, streams, open generics, dictionaries, polymorphism, reference cycles, extension data, unsupported custom converters/resolvers, case-insensitive property matching, contracts deeper than 16 levels, and contracts exceeding 128 properties.
+- `IAgentToolArgumentValidator` is an optional provider-neutral capability. Core invokes it during the existing atomic batch-prevalidation phase after structural, uniqueness, authorization, registration, and budget checks and before any tool executes.
+- Invalid typed arguments fail with `InvalidToolArguments` and a fixed redacted message. Existing untyped tools remain compatible.
+- Typed invocation deserializes and serializes with the frozen metadata, propagates cancellation, preserves execution/tool-call identifiers, and returns owned JSON through the existing `ToolResult` contract.
+- Hosting adds only the non-generic `AddAgentTool(IAgentTool)` instance overload. Registration does not authorize a tool; agent allow-lists remain mandatory.
+- No OpenAI provider, Microsoft.Extensions.AI adapter, beginner facade, retry, persistence, parallel execution, or other later-increment capability was added.
+
 ## Verified Phase 1 implementation
 
-All Phase 1 guarantees described below remain verified after the Increment 3 streaming addition.
+All Phase 1 guarantees described below remain verified after the Increment 4 typed-tool addition.
 
 ## Verified Phase 2 Increment 3 implementation
 
@@ -186,11 +198,11 @@ dotnet test AgentForge.slnx --configuration Release --no-build
 Result:
 
 ```text
-Passed!  - Failed: 0, Passed: 95, Skipped: 0, Total: 95
+Passed!  - Failed: 0, Passed: 125, Skipped: 0, Total: 125
 Target: .NETCoreApp,Version=v10.0
 ```
 
-The 95 tests retain all 60 Phase 1 and Increment 1-2 tests and add deterministic streaming coverage for successful deltas and zero-delta completion, tool round-trips, usage/transcript accounting, non-streaming parity, capability detection, provider protocol violations, malformed responses, partial provider failures, authorization, atomic batch rejection, execution-wide call-ID uniqueness, model/tool limits, cancellation boundaries, cancellation-ignoring providers, early consumer disposal, finish-reason failures, concurrent-run isolation, redaction, and Hosting registration.
+The 125 tests include all 95 existing Phase 1 and Increment 1-3 tests plus 30 typed-tool tests covering deterministic schema generation, naming, required/nullability rules, string enums, numeric handling, nested objects and lists, unknown-property rejection, unsupported contracts/converters, depth and property-count bounds, frozen options, typed invocation, cancellation/context propagation, JSON ownership, DI registration, atomic non-streaming and streaming rejection, legacy-tool compatibility, redaction, and concurrent isolation.
 
 Console sample:
 
@@ -205,7 +217,7 @@ Result:
 Model calls: 2; Tool calls: 1
 ```
 
-These results verify the Phase 1 implementation and Phase 2 Increments 1-3 on the listed SDK and local Windows environment. They do not verify behavior on other operating systems, other SDK patches, external model providers, or distributed infrastructure.
+These results verify the Phase 1 implementation and Phase 2 Increments 1-4 on the listed SDK and local Windows environment. They do not verify behavior on other operating systems, other SDK patches, external model providers, or distributed infrastructure.
 
 ## Unimplemented features
 
@@ -223,7 +235,7 @@ The following are intentionally not implemented and have not been verified:
 - OpenTelemetry activities, metrics, semantic conventions, or exporters.
 - ASP.NET Core endpoints or hosted-service integration.
 - Parallel tool execution.
-- Tool schema validation, tool approval workflows, process isolation, or sandboxing.
+- Tool approval workflows, process isolation, or sandboxing.
 - Multimodal message content.
 - NuGet packaging, API compatibility baselines, signing, CI, or release automation.
 
@@ -232,7 +244,8 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 ## Known limitations
 
 - Initial `AgentRunRequest.Messages` currently accepts one or more non-empty `UserMessage` instances only. Supplying prior assistant/tool history is rejected even though the internal message model can represent it.
-- Tool argument validation guarantees an owned, defined `JsonElement`; Core does not validate arguments against `ToolDescriptor.ParametersSchema`.
+- Untyped tools receive only the existing structural JSON checks unless they implement `IAgentToolArgumentValidator`.
+- Typed tools intentionally support a bounded schema subset; case-insensitive property matching, dictionaries, arbitrary converters/resolvers, polymorphism, and general external JSON Schema validation are not supported.
 - Tool descriptors and implementations are trusted application configuration. Tool code can access all permissions available to the host process.
 - Tool calls execute sequentially. There is no opt-in declaration for read-only or concurrency-safe tools.
 - Failures stop execution immediately. No recovery state or partial transcript is returned to the caller.
@@ -255,4 +268,4 @@ None of these outstanding issues invalidate the verified Phase 1 acceptance resu
 
 ## Next recommended task
 
-Stop after Increment 3. The next recommended task is a rigorous read-only review of the provider-neutral streaming contracts, shared-engine implementation, protocol validation, and cancellation/disposal behavior. Phase 2 Increment 4 must not begin without explicit approval.
+Stop after Increment 4. The next recommended task is a rigorous read-only review of the typed-tool contracts, schema/validator consistency, atomic prevalidation, and security boundaries. Phase 2 Increment 5 must not begin without explicit approval, including resolution of its transport-test seam.

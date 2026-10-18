@@ -281,9 +281,6 @@ internal sealed class AgentExecutionEngine
         int remainingBudget,
         ExecutionId executionId)
     {
-        if (calls.Count > remainingBudget)
-            throw PolicyError(AgentExecutionErrorCode.ToolCallLimitExceeded, executionId, "The requested tool batch exceeds the remaining tool-call budget.");
-
         var callIds = new HashSet<string>(seenToolCallIds, StringComparer.Ordinal);
         var validated = new List<ValidatedToolCall>(calls.Count);
         foreach (var call in calls)
@@ -297,6 +294,28 @@ internal sealed class AgentExecutionEngine
             if (!_toolRegistry.TryResolve(call.Name, out var tool) || tool is null)
                 throw PolicyError(AgentExecutionErrorCode.ToolNotFound, executionId, "The model requested a tool that is not registered.");
             validated.Add(new ValidatedToolCall(call, tool));
+        }
+
+        if (calls.Count > remainingBudget)
+            throw PolicyError(AgentExecutionErrorCode.ToolCallLimitExceeded, executionId, "The requested tool batch exceeds the remaining tool-call budget.");
+
+        foreach (var item in validated)
+        {
+            if (item.Tool is not IAgentToolArgumentValidator validator)
+                continue;
+
+            try
+            {
+                validator.ValidateArguments(item.Call.Arguments);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new AgentExecutionException(
+                    AgentExecutionErrorCode.InvalidToolArguments,
+                    executionId,
+                    "A tool call contains invalid arguments.",
+                    exception);
+            }
         }
 
         seenToolCallIds.UnionWith(calls.Select(call => call.Id));

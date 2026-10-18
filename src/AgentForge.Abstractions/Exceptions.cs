@@ -11,6 +11,8 @@ public enum AgentExecutionErrorCode
     ToolNotAllowed,
     /// <summary>The model requested an unregistered tool.</summary>
     ToolNotFound,
+    /// <summary>The model supplied arguments that do not satisfy the selected tool's contract.</summary>
+    InvalidToolArguments,
     /// <summary>The model returned a response that violates the contract.</summary>
     InvalidModelResponse,
     /// <summary>The model output ended before it was complete.</summary>

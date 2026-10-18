@@ -31,4 +31,16 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAgentTool, TTool>();
         return services;
     }
+
+    /// <summary>Adds one trusted tool instance.</summary>
+    /// <param name="services">The application service collection.</param>
+    /// <param name="tool">The tool instance.</param>
+    /// <returns>The same collection for chaining.</returns>
+    public static IServiceCollection AddAgentTool(this IServiceCollection services, IAgentTool tool)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(tool);
+        services.AddSingleton(tool);
+        return services;
+    }
 }

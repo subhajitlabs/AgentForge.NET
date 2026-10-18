@@ -100,6 +100,15 @@ public interface IAgentTool
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>Validates a tool's complete JSON argument payload before any tool in its batch executes.</summary>
+public interface IAgentToolArgumentValidator
+{
+    /// <summary>Validates an owned JSON argument value.</summary>
+    /// <param name="arguments">The complete tool arguments.</param>
+    /// <exception cref="ArgumentException">The arguments do not satisfy the tool's contract.</exception>
+    void ValidateArguments(JsonElement arguments);
+}
+
 /// <summary>Resolves registered tools by exact name.</summary>
 public interface IAgentToolRegistry
 {
