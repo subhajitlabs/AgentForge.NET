@@ -43,14 +43,14 @@ public sealed class Phase1HardeningTests
                     ((IList<AgentMessage>)request.Messages).Add(new UserMessage("injected")));
                 Assert.Throws<NotSupportedException>(() =>
                     ((IList<ToolDescriptor>)request.AvailableTools).Clear());
-                return Task.FromResult(new ModelResponse(AssistantMessage.FromToolCalls(Call("one", "echo"))));
+                return Task.FromResult(ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("one", "echo"))));
             },
             (request, _) =>
             {
                 var priorAssistant = Assert.IsType<AssistantMessage>(request.Messages[^2]);
                 Assert.Throws<NotSupportedException>(() =>
                     ((IList<ToolCall>)priorAssistant.ToolCalls).Clear());
-                return Task.FromResult(new ModelResponse(AssistantMessage.FromText("done")));
+                return Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText("done")));
             }
         ]);
 
@@ -86,7 +86,7 @@ public sealed class Phase1HardeningTests
         var element = document.RootElement;
         document.Dispose();
         var provider = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(new ToolCall("id", "echo", element))));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(new ToolCall("id", "echo", element))));
 
         var exception = await Assert.ThrowsAsync<AgentExecutionException>(() =>
             Runtime(provider, new DelegateTool("echo")).RunAsync(Request(["echo"])));
@@ -103,7 +103,7 @@ public sealed class Phase1HardeningTests
         {
             entered.SetResult();
             await release.Task;
-            return new ModelResponse(AssistantMessage.FromText("must not complete"));
+            return ModelResponse.Completed(AssistantMessage.FromText("must not complete"));
         }]);
         using var cancellation = new CancellationTokenSource();
         var run = Runtime(provider).RunAsync(Request(), cancellation.Token);
@@ -125,7 +125,7 @@ public sealed class Phase1HardeningTests
             return Task.FromResult(Json("null"));
         });
         var second = new DelegateTool("second");
-        var provider = ScriptedAgentModelClient.FromResponses(new ModelResponse(
+        var provider = ScriptedAgentModelClient.FromResponses(ModelResponse.ToolCalls(
             AssistantMessage.FromToolCalls(Call("one", "first"), Call("two", "second"))));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -140,7 +140,7 @@ public sealed class Phase1HardeningTests
     {
         var tool = new DelegateTool("null-tool", (_, _) => Task.FromResult<JsonElement>(default), returnsNull: true);
         var provider = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("id", "null-tool"))));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("id", "null-tool"))));
 
         var exception = await Assert.ThrowsAsync<AgentToolException>(() =>
             Runtime(provider, tool).RunAsync(Request(["null-tool"])));
@@ -158,7 +158,7 @@ public sealed class Phase1HardeningTests
         document.Dispose();
         var tool = new DelegateTool("disposed-tool", (_, _) => Task.FromResult(element));
         var provider = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("id", "disposed-tool"))));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("id", "disposed-tool"))));
 
         var exception = await Assert.ThrowsAsync<AgentToolException>(() =>
             Runtime(provider, tool).RunAsync(Request(["disposed-tool"])));
@@ -173,8 +173,8 @@ public sealed class Phase1HardeningTests
     {
         var tool = new DelegateTool("echo");
         var provider = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("one", "echo"))),
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("two", "echo"))));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("one", "echo"))),
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("two", "echo"))));
 
         var exception = await Assert.ThrowsAsync<AgentExecutionException>(() =>
             Runtime(provider, tool).RunAsync(Request(["echo"], new AgentExecutionLimits(3, 1))));
@@ -188,8 +188,8 @@ public sealed class Phase1HardeningTests
     {
         var tool = new DelegateTool("echo");
         var provider = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("same", "echo"))),
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("same", "echo"))));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("same", "echo"))),
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("same", "echo"))));
 
         var exception = await Assert.ThrowsAsync<AgentExecutionException>(() =>
             Runtime(provider, tool).RunAsync(Request(["echo"])));
@@ -203,8 +203,8 @@ public sealed class Phase1HardeningTests
     {
         var tool = new DelegateTool("echo");
         var provider = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("one", "echo")), new ModelUsage(long.MaxValue, 0)),
-            new ModelResponse(AssistantMessage.FromText("done"), new ModelUsage(1, 0)));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("one", "echo")), new ModelUsage(long.MaxValue, 0)),
+            ModelResponse.Completed(AssistantMessage.FromText("done"), new ModelUsage(1, 0)));
 
         var exception = await Assert.ThrowsAsync<AgentExecutionException>(() =>
             Runtime(provider, tool).RunAsync(Request(["echo"])));
@@ -220,7 +220,7 @@ public sealed class Phase1HardeningTests
         var provider = new ScriptedAgentModelClient([(_, _) =>
         {
             providerCalled = true;
-            return Task.FromResult(new ModelResponse(AssistantMessage.FromText("unused")));
+            return Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText("unused")));
         }]);
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
@@ -233,7 +233,7 @@ public sealed class Phase1HardeningTests
     public async Task RunAsync_RegistryChangesAfterValidation_MissingToolHasExactErrorCode()
     {
         var provider = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("id", "echo"))));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("id", "echo"))));
         var registry = new VanishingToolRegistry(new DelegateTool("echo"));
         var runtime = new AgentRuntime(provider, registry);
 
@@ -275,7 +275,7 @@ public sealed class Phase1HardeningTests
         {
             var descriptor = Assert.Single(request.AvailableTools);
             Assert.Equal("allowed", descriptor.Name);
-            return Task.FromResult(new ModelResponse(AssistantMessage.FromText("done")));
+            return Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText("done")));
         }]);
 
         await Runtime(provider, new DelegateTool("allowed"), new DelegateTool("other"))
@@ -291,7 +291,7 @@ public sealed class Phase1HardeningTests
         const string secretArgument = "credential-argument-6b1c";
         var logger = new RecordingLogger<AgentRuntime>();
         var tool = new DelegateTool(secretTool, (_, _) => Task.FromException<JsonElement>(new InvalidOperationException("internal")));
-        var provider = ScriptedAgentModelClient.FromResponses(new ModelResponse(AssistantMessage.FromToolCalls(
+        var provider = ScriptedAgentModelClient.FromResponses(ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(
             new ToolCall(secretCallId, secretTool, Json($"{{\"value\":\"{secretArgument}\"}}")))));
         var request = Request([secretTool], message: secretPrompt);
         var runtime = new AgentRuntime(provider, new AgentToolRegistry([tool]), logger);
@@ -317,8 +317,8 @@ public sealed class Phase1HardeningTests
         var tool = new DelegateTool("echo", (_, _) =>
             Task.FromResult(Json($"{{\"value\":\"{secretResult}\"}}")));
         var provider = new ScriptedAgentModelClient([
-            (_, _) => Task.FromResult(new ModelResponse(AssistantMessage.FromToolCalls(Call("id", "echo")))),
-            (_, _) => Task.FromResult(new ModelResponse(AssistantMessage.FromText("done")))
+            (_, _) => Task.FromResult(ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("id", "echo")))),
+            (_, _) => Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText("done")))
         ]);
         var runtime = new AgentRuntime(provider, new AgentToolRegistry([tool]), logger);
 
@@ -333,7 +333,7 @@ public sealed class Phase1HardeningTests
         var first = new DelegateTool("first");
         var second = new DelegateTool("second", (_, _) =>
             Task.FromException<JsonElement>(new InvalidOperationException("failure")));
-        var provider = ScriptedAgentModelClient.FromResponses(new ModelResponse(
+        var provider = ScriptedAgentModelClient.FromResponses(ModelResponse.ToolCalls(
             AssistantMessage.FromToolCalls(Call("one", "first"), Call("two", "second"))));
 
         await Assert.ThrowsAsync<AgentToolException>(() =>
@@ -442,9 +442,9 @@ public sealed class Phase1HardeningTests
             cancellationToken.ThrowIfCancellationRequested();
             var toolResult = request.Messages.OfType<ToolResultMessage>().SingleOrDefault();
             return Task.FromResult(toolResult is null
-                ? new ModelResponse(AssistantMessage.FromToolCalls(
+                ? ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(
                     Call($"call-{request.ExecutionId}", "echo")))
-                : new ModelResponse(AssistantMessage.FromText("done")));
+                : ModelResponse.Completed(AssistantMessage.FromText("done")));
         }
     }
 

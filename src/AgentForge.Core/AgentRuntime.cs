@@ -92,6 +92,7 @@ public sealed class AgentRuntime : IAgentRuntime
             }
 
             ValidateResponse(response, executionId);
+            EnforceFinishReason(response.FinishReason, executionId, cancellationToken);
             if (response.Usage is not null)
             {
                 hasUsage = true;
@@ -220,10 +221,47 @@ public sealed class AgentRuntime : IAgentRuntime
 
         var hasText = !string.IsNullOrWhiteSpace(response.Message.Text);
         var hasToolCalls = response.Message.ToolCalls is { Count: > 0 };
-        if (hasText == hasToolCalls)
-            throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "An assistant message must contain either text or tool calls, but not both.");
+        var invalidCombination = response.FinishReason switch
+        {
+            ModelFinishReason.Completed => !hasText || hasToolCalls,
+            ModelFinishReason.ToolCalls => hasText || !hasToolCalls,
+            ModelFinishReason.LengthLimit or ModelFinishReason.ContentFiltered or ModelFinishReason.Refused => hasToolCalls,
+            ModelFinishReason.Cancelled => hasText || hasToolCalls,
+            ModelFinishReason.Unknown => hasToolCalls,
+            _ => true
+        };
+        if (invalidCombination)
+            throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "The assistant message is incompatible with the model finish reason.");
         if (response.Usage is { InputTokens: < 0 } or { OutputTokens: < 0 })
             throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "Model usage values cannot be negative.");
+    }
+
+    private static void EnforceFinishReason(
+        ModelFinishReason finishReason,
+        ExecutionId executionId,
+        CancellationToken cancellationToken)
+    {
+        switch (finishReason)
+        {
+            case ModelFinishReason.Completed:
+            case ModelFinishReason.ToolCalls:
+                return;
+            case ModelFinishReason.LengthLimit:
+                throw PolicyError(AgentExecutionErrorCode.ModelOutputIncomplete, executionId, "The model output ended before completion.");
+            case ModelFinishReason.ContentFiltered:
+                throw PolicyError(AgentExecutionErrorCode.ModelOutputFiltered, executionId, "The model output was filtered.");
+            case ModelFinishReason.Refused:
+                throw PolicyError(AgentExecutionErrorCode.ModelRefused, executionId, "The model refused the request.");
+            case ModelFinishReason.Cancelled:
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new AgentProviderException(
+                    executionId,
+                    $"The model provider reported cancellation during execution '{executionId}'.",
+                    new InvalidOperationException("The provider reported cancellation without caller cancellation."));
+            case ModelFinishReason.Unknown:
+            default:
+                throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "The model returned an unsupported finish reason.");
+        }
     }
 
     private IReadOnlyList<ValidatedToolCall> PrevalidateToolBatch(

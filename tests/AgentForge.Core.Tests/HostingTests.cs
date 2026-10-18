@@ -34,7 +34,7 @@ public sealed class HostingTests
         public Task<ModelResponse> CompleteAsync(ModelRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(new ModelResponse(AssistantMessage.FromText("hosted")));
+            return Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText("hosted")));
         }
     }
 

@@ -11,12 +11,12 @@ var addCall = new ToolCall(
 
 var model = new ScriptedAgentModelClient(
 [
-    (_, _) => Task.FromResult(new ModelResponse(AssistantMessage.FromToolCalls(addCall))),
+    (_, _) => Task.FromResult(ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(addCall))),
     (request, _) =>
     {
         var toolResult = request.Messages.OfType<ToolResultMessage>().Single();
         var value = toolResult.Result.GetProperty("value").GetDecimal();
-        return Task.FromResult(new ModelResponse(AssistantMessage.FromText($"20 + 22 = {value}")));
+        return Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText($"20 + 22 = {value}")));
     }
 ]);
 

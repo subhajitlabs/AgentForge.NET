@@ -1,13 +1,32 @@
 # AgentForge.NET Current Status
 
 Status date: 2026-10-18  
-Current milestone: Phase 1 complete  
+Current milestone: Phase 2 Increment 1 (Finish Reasons) complete; later increments not authorized
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
 This document describes the implementation currently present in this repository. Items under **Verified** were exercised locally using the commands and environment recorded below. Design goals and future work are not presented as implemented behavior.
 
 ## Verified Phase 1 implementation
+
+All Phase 1 guarantees described below remain verified after the Increment 1 migration.
+
+## Verified Phase 2 Increment 1 implementation
+
+- `ModelFinishReason` is a provider-neutral enum with `Completed`, `ToolCalls`, `LengthLimit`, `ContentFiltered`, `Refused`, `Cancelled`, and `Unknown` values.
+- `ModelResponse` requires an explicit finish reason through its public constructor.
+- The public constructor validates that the assistant-message shape is compatible with the finish reason:
+  - `Completed` requires non-empty text and no tool calls;
+  - `ToolCalls` requires one or more tool calls and no text;
+  - incomplete, filtered, and refused outcomes may contain optional partial text but no tool calls;
+  - `Cancelled` requires no useful assistant content;
+  - `Unknown` may contain mapped text but no executable tool calls.
+- `ModelResponse.Completed(...)` and `ModelResponse.ToolCalls(...)` factories make successful response construction explicit.
+- `AgentRuntime` accepts only `Completed` as successful terminal output and only `ToolCalls` as an executable tool turn.
+- Length-limited, filtered, and refused output fails with stable execution error codes.
+- `Unknown` is classified as `InvalidModelResponse`.
+- A provider-reported `Cancelled` reason propagates caller cancellation when the caller token is cancelled; without caller cancellation it is classified as an `AgentProviderException` with its cause preserved.
+- No streaming contract, provider adapter, typed-tool package, facade, or other later Phase 2 increment is implemented.
 
 ### Runtime and execution lifecycle
 
@@ -72,7 +91,10 @@ This document describes the implementation currently present in this repository.
   - `ToolCallLimitExceeded`;
   - `ToolNotAllowed`;
   - `ToolNotFound`;
-  - `InvalidModelResponse`.
+  - `InvalidModelResponse`;
+  - `ModelOutputIncomplete`;
+  - `ModelOutputFiltered`;
+  - `ModelRefused`.
 - Provider failures are wrapped in `AgentProviderException` with the execution ID and original exception preserved as `InnerException`.
 - Tool failures are wrapped in `AgentToolException` with execution ID, tool name, call ID, and original exception preserved.
 - Null, undefined, or disposed JSON tool results are reported as `AgentToolException` after invocation.
@@ -97,6 +119,7 @@ This document describes the implementation currently present in this repository.
 - `AgentRunRequest` contains only the agent definition and initial messages; the unused `ConversationId` placeholder was removed during Phase 1 hardening.
 - Normal completion returns `AgentRunResult`; invalid configuration, policy violations, dependency failures, and cancellation use exceptions.
 - Provider adapters implement one-turn `IAgentModelClient.CompleteAsync` semantics. The model client does not execute tools.
+- Every `ModelResponse` explicitly states its `ModelFinishReason`; the runtime never infers successful completion solely from message shape.
 - Tool implementations expose metadata separately from invocation through `ToolDescriptor` and `InvokeAsync`.
 - `AgentForge.Abstractions` contains domain contracts, `AgentForge.Core` owns execution policy, and `AgentForge.Hosting` owns DI composition.
 - Package versions and build rules are centralized in `Directory.Packages.props` and `Directory.Build.props`.
@@ -134,22 +157,22 @@ Build succeeded.
 Test run:
 
 ```powershell
-dotnet test AgentForge.slnx --configuration Release
+dotnet test AgentForge.slnx --configuration Release --no-build
 ```
 
 Result:
 
 ```text
-Passed!  - Failed: 0, Passed: 42, Skipped: 0, Total: 42
+Passed!  - Failed: 0, Passed: 60, Skipped: 0, Total: 60
 Target: .NETCoreApp,Version=v10.0
 ```
 
-The 42 tests cover terminal completion, immutable public snapshots, nested JSON ownership, transcript composition, usage aggregation and overflow, tool-call/result correlation, deterministic tool ordering, positive and cumulative limits, atomic invalid-batch rejection, execution-wide call-ID uniqueness, cancellation before/during/after asynchronous boundaries, provider/tool failure propagation, malformed/disposed provider and tool JSON, null tool results, registration and descriptor snapshots, descriptor filtering, logging redaction, tool-enabled concurrency isolation, and DI composition.
+The 60 tests retain all Phase 1 coverage and add deterministic coverage for both response factories, every finish reason, valid empty/partial failure content, invalid message/reason combinations, undefined enum values, exact execution error codes, provider-reported cancellation, and caller-triggered cancellation.
 
 Console sample:
 
 ```powershell
-dotnet run --project samples\AgentForge.Samples.Console\AgentForge.Samples.Console.csproj --configuration Release
+dotnet run --project samples\AgentForge.Samples.Console\AgentForge.Samples.Console.csproj --configuration Release --no-build
 ```
 
 Result:
@@ -159,7 +182,7 @@ Result:
 Model calls: 2; Tool calls: 1
 ```
 
-These results verify the checked-in Phase 1 implementation on the listed SDK and local Windows environment. They do not verify behavior on other operating systems, other SDK patches, external model providers, or distributed infrastructure.
+These results verify the Phase 1 implementation and Phase 2 Increment 1 on the listed SDK and local Windows environment. They do not verify behavior on other operating systems, other SDK patches, external model providers, streaming, or distributed infrastructure.
 
 ## Unimplemented features
 
@@ -198,7 +221,7 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 
 - There is no CI workflow to reproduce the local .NET 10 build and test evidence.
 - Public API compatibility is not yet tracked with an API baseline tool.
-- Provider capability and finish-reason semantics are not defined.
+- Provider capability negotiation beyond interface-based future streaming detection is not implemented.
 - Streaming event types, cancellation after partial output, and partial-failure semantics are not designed.
 - Usage normalization across providers is not defined.
 - Content logging/redaction remains deny-by-default but has no configurable policy model.
@@ -208,13 +231,4 @@ None of these outstanding issues invalidate the verified Phase 1 acceptance resu
 
 ## Next recommended task
 
-Prepare a Phase 2 architecture proposal for review without implementing it. The proposal should define:
-
-1. the streaming event model and terminal/partial-failure semantics;
-2. provider capability negotiation and finish reasons;
-3. a Microsoft.Extensions.AI adapter boundary;
-4. provider contract-test fixtures reusable by real adapters;
-5. usage normalization and cancellation behavior;
-6. credential handling, redaction, and opt-in integration-test policy.
-
-Implementation of a real provider or any other Phase 2 feature should begin only after that proposal is explicitly approved.
+Stop after Increment 1. The next recommended task is a read-only review of the finish-reason public contract and runtime behavior, followed—only with explicit approval—by Phase 2 Increment 2, the internal execution-engine extraction. Increment 2 must preserve observable Phase 1 and Increment 1 behavior and must not introduce streaming or provider functionality.

@@ -12,7 +12,13 @@ public enum AgentExecutionErrorCode
     /// <summary>The model requested an unregistered tool.</summary>
     ToolNotFound,
     /// <summary>The model returned a response that violates the contract.</summary>
-    InvalidModelResponse
+    InvalidModelResponse,
+    /// <summary>The model output ended before it was complete.</summary>
+    ModelOutputIncomplete,
+    /// <summary>The model output was blocked by content filtering.</summary>
+    ModelOutputFiltered,
+    /// <summary>The model refused the request.</summary>
+    ModelRefused
 }
 
 /// <summary>A runtime policy or model-contract violation.</summary>

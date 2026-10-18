@@ -11,7 +11,7 @@ public sealed class AgentRuntimeTests
     public async Task RunAsync_FinalResponse_CompletesWithTranscriptAndUsage()
     {
         var model = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromText("done"), new ModelUsage(3, 2)));
+            ModelResponse.Completed(AssistantMessage.FromText("done"), new ModelUsage(3, 2)));
 
         var result = await CreateRuntime(model).RunAsync(Request());
 
@@ -30,14 +30,14 @@ public sealed class AgentRuntimeTests
     {
         var tool = new RecordingTool("echo");
         var model = new ScriptedAgentModelClient([
-            (_, _) => Task.FromResult(new ModelResponse(AssistantMessage.FromToolCalls(Call("id-1", "echo")))),
+            (_, _) => Task.FromResult(ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("id-1", "echo")))),
             (request, _) =>
             {
                 var assistant = Assert.IsType<AssistantMessage>(request.Messages[^2]);
                 var toolResult = Assert.IsType<ToolResultMessage>(request.Messages[^1]);
                 Assert.Equal("id-1", assistant.ToolCalls.Single().Id);
                 Assert.Equal("id-1", toolResult.ToolCallId);
-                return Task.FromResult(new ModelResponse(AssistantMessage.FromText("complete")));
+                return Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText("complete")));
             }
         ]);
 
@@ -55,8 +55,8 @@ public sealed class AgentRuntimeTests
         var first = new RecordingTool("first", invocation => order.Enqueue("first"));
         var second = new RecordingTool("second", invocation => order.Enqueue("second"));
         var model = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("1", "first"), Call("2", "second"))),
-            new ModelResponse(AssistantMessage.FromText("done")));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("1", "first"), Call("2", "second"))),
+            ModelResponse.Completed(AssistantMessage.FromText("done")));
 
         await CreateRuntime(model, first, second).RunAsync(Request(Tools("first", "second")));
 
@@ -74,7 +74,7 @@ public sealed class AgentRuntimeTests
         var model = new ScriptedAgentModelClient([(_, _) =>
         {
             invoked = true;
-            return Task.FromResult(new ModelResponse(AssistantMessage.FromText("unused")));
+            return Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText("unused")));
         }]);
 
         await Assert.ThrowsAnyAsync<ArgumentOutOfRangeException>(() =>
@@ -88,8 +88,8 @@ public sealed class AgentRuntimeTests
     {
         var calls = 0;
         var model = new ScriptedAgentModelClient([
-            (_, _) => { calls++; return Task.FromResult(new ModelResponse(AssistantMessage.FromToolCalls(Call("1", "echo")))); },
-            (_, _) => { calls++; return Task.FromResult(new ModelResponse(AssistantMessage.FromText("must not run"))); }
+            (_, _) => { calls++; return Task.FromResult(ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("1", "echo")))); },
+            (_, _) => { calls++; return Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText("must not run"))); }
         ]);
 
         var exception = await Assert.ThrowsAsync<AgentExecutionException>(() =>
@@ -104,7 +104,7 @@ public sealed class AgentRuntimeTests
     public async Task RunAsync_OverBudgetBatch_ExecutesNoTools()
     {
         var tool = new RecordingTool("echo");
-        var model = ScriptedAgentModelClient.FromResponses(new ModelResponse(
+        var model = ScriptedAgentModelClient.FromResponses(ModelResponse.ToolCalls(
             AssistantMessage.FromToolCalls(Call("1", "echo"), Call("2", "echo"))));
 
         var exception = await Assert.ThrowsAsync<AgentExecutionException>(() =>
@@ -132,7 +132,7 @@ public sealed class AgentRuntimeTests
         var first = scenario == "duplicate" ? Call("same", "valid") : Call("first", "valid");
         IReadOnlySet<string> allowed = new HashSet<string>(["valid"], StringComparer.Ordinal);
         var model = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(first, bad)));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(first, bad)));
 
         var exception = await Assert.ThrowsAsync<AgentExecutionException>(() =>
             CreateRuntime(model, valid).RunAsync(Request(allowed)));
@@ -148,7 +148,7 @@ public sealed class AgentRuntimeTests
         var model = new ScriptedAgentModelClient([(_, _) =>
         {
             invoked = true;
-            return Task.FromResult(new ModelResponse(AssistantMessage.FromText("unused")));
+            return Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText("unused")));
         }]);
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -188,7 +188,7 @@ public sealed class AgentRuntimeTests
             return Json("null");
         });
         var model = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("1", "echo"))));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("1", "echo"))));
         using var cancellation = new CancellationTokenSource();
         var run = CreateRuntime(model, tool).RunAsync(Request(Tools("echo")), cancellation.Token);
         await entered.Task;
@@ -216,7 +216,7 @@ public sealed class AgentRuntimeTests
         var cause = new InvalidOperationException("tool failed");
         var tool = new RecordingTool("echo", (_, _) => Task.FromException<JsonElement>(cause));
         var model = ScriptedAgentModelClient.FromResponses(
-            new ModelResponse(AssistantMessage.FromToolCalls(Call("call-x", "echo"))));
+            ModelResponse.ToolCalls(AssistantMessage.FromToolCalls(Call("call-x", "echo"))));
 
         var exception = await Assert.ThrowsAsync<AgentToolException>(() =>
             CreateRuntime(model, tool).RunAsync(Request(Tools("echo"))));
@@ -226,18 +226,12 @@ public sealed class AgentRuntimeTests
         Assert.Equal("call-x", exception.ToolCallId);
     }
 
-    [Theory]
-    [InlineData("empty")]
-    [InlineData("ambiguous")]
-    [InlineData("negative-usage")]
-    public async Task RunAsync_InvalidModelResponse_FailsDeterministically(string scenario)
+    [Fact]
+    public async Task RunAsync_NegativeUsage_IsInvalidModelResponse()
     {
-        var message = scenario == "ambiguous"
-            ? new AssistantMessage("text", [Call("1", "echo")])
-            : new AssistantMessage(null, []);
-        var usage = scenario == "negative-usage" ? new ModelUsage(-1, 0) : null;
-        if (scenario == "negative-usage") message = AssistantMessage.FromText("text");
-        var model = ScriptedAgentModelClient.FromResponses(new ModelResponse(message, usage));
+        var model = ScriptedAgentModelClient.FromResponses(ModelResponse.Completed(
+            AssistantMessage.FromText("text"),
+            new ModelUsage(-1, 0)));
 
         var exception = await Assert.ThrowsAsync<AgentExecutionException>(() => CreateRuntime(model).RunAsync(Request()));
 
@@ -317,7 +311,7 @@ public sealed class AgentRuntimeTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             var text = request.Messages.OfType<UserMessage>().Single().Text;
-            return Task.FromResult(new ModelResponse(AssistantMessage.FromText(text)));
+            return Task.FromResult(ModelResponse.Completed(AssistantMessage.FromText(text)));
         }
     }
 }

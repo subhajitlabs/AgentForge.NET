@@ -35,10 +35,74 @@ public sealed record ModelRequest
     public IReadOnlyList<ToolDescriptor> AvailableTools { get; }
 }
 
-/// <summary>Output from one model invocation.</summary>
-/// <param name="Message">Exactly one assistant message.</param>
-/// <param name="Usage">Optional usage reported by the provider.</param>
-public sealed record ModelResponse(AssistantMessage Message, ModelUsage? Usage = null);
+/// <summary>Output from one model invocation with an explicit terminal reason.</summary>
+public sealed record ModelResponse
+{
+    /// <summary>Creates a validated model response.</summary>
+    /// <param name="message">Exactly one assistant message.</param>
+    /// <param name="finishReason">The provider-neutral reason the model turn ended.</param>
+    /// <param name="usage">Optional usage reported by the provider.</param>
+    public ModelResponse(
+        AssistantMessage message,
+        ModelFinishReason finishReason,
+        ModelUsage? usage = null)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (!Enum.IsDefined(finishReason))
+            throw new ArgumentOutOfRangeException(nameof(finishReason));
+
+        var hasText = !string.IsNullOrWhiteSpace(message.Text);
+        var hasToolCalls = message.ToolCalls is { Count: > 0 };
+
+        if (message.ToolCalls is null)
+            throw new ArgumentException("The assistant tool-call collection cannot be null.", nameof(message));
+
+        switch (finishReason)
+        {
+            case ModelFinishReason.Completed when !hasText || hasToolCalls:
+                throw InvalidCombination(nameof(message));
+            case ModelFinishReason.ToolCalls when hasText || !hasToolCalls:
+                throw InvalidCombination(nameof(message));
+            case ModelFinishReason.LengthLimit or ModelFinishReason.ContentFiltered or ModelFinishReason.Refused
+                when hasToolCalls:
+                throw InvalidCombination(nameof(message));
+            case ModelFinishReason.Cancelled when hasText || hasToolCalls:
+                throw InvalidCombination(nameof(message));
+            case ModelFinishReason.Unknown when hasToolCalls:
+                throw InvalidCombination(nameof(message));
+        }
+
+        Message = message;
+        FinishReason = finishReason;
+        Usage = usage;
+    }
+
+    /// <summary>Gets the assistant message.</summary>
+    public AssistantMessage Message { get; }
+
+    /// <summary>Gets the provider-neutral reason the model turn ended.</summary>
+    public ModelFinishReason FinishReason { get; }
+
+    /// <summary>Gets optional provider-reported usage.</summary>
+    public ModelUsage? Usage { get; }
+
+    /// <summary>Creates a completed terminal text response.</summary>
+    /// <param name="message">A non-empty text-only assistant message.</param>
+    /// <param name="usage">Optional usage reported by the provider.</param>
+    /// <returns>A validated completed response.</returns>
+    public static ModelResponse Completed(AssistantMessage message, ModelUsage? usage = null) =>
+        new(message, ModelFinishReason.Completed, usage);
+
+    /// <summary>Creates a response requesting one or more tools.</summary>
+    /// <param name="message">A tool-call-only assistant message.</param>
+    /// <param name="usage">Optional usage reported by the provider.</param>
+    /// <returns>A validated tool-call response.</returns>
+    public static ModelResponse ToolCalls(AssistantMessage message, ModelUsage? usage = null) =>
+        new(message, ModelFinishReason.ToolCalls, usage);
+
+    private static ArgumentException InvalidCombination(string parameterName) =>
+        new("The assistant message is incompatible with the model finish reason.", parameterName);
+}
 
 /// <summary>Provider-reported token usage.</summary>
 /// <param name="InputTokens">Input token count.</param>
