@@ -1,15 +1,24 @@
 # AgentForge.NET Current Status
 
 Status date: 2026-10-18  
-Current milestone: Phase 2 Increment 4 (Typed Tools) complete; later increments not authorized
+Current milestone: Phase 2 Increment 5 (OpenAI Responses Provider) complete; later increments not authorized
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
 This document describes the implementation currently present in this repository. Items under **Verified** were exercised locally using the commands and environment recorded below. Design goals and future work are not presented as implemented behavior.
 
-## Phase 2 Increment 5 investigation
+## Verified Phase 2 Increment 5 implementation
 
-The documentation-only Increment 5 SDK investigation is complete. It recommends official OpenAI .NET SDK 2.14.0, confirms deterministic JSON/SSE testing through the public `ResponsesClientOptions.Transport` and `HttpClientPipelineTransport` seam, defines explicit Responses status/event/tool/error mappings, and records a **READY** verdict. See [`PHASE2_INCREMENT5_INVESTIGATION.md`](PHASE2_INCREMENT5_INVESTIGATION.md). This investigation does not authorize or represent an implemented OpenAI provider; the baseline remains Phase 2 Increment 4 with 125 passing tests.
+- `AgentForge.Providers.OpenAI` adapts the official OpenAI .NET SDK 2.14.0 Responses API to `IAgentModelClient` and `IStreamingAgentModelClient` without adding provider dependencies to Core.
+- Provider-owned construction validates and snapshots the API key and endpoint, requires HTTPS except for explicitly enabled loopback HTTP, rejects URI user-info/fragments, and disables SDK retries with `ClientRetryPolicy(0)`.
+- Every request is stateless and sends the full ordered AgentForge transcript with `store=false`, `parallel_tool_calls=false`, no previous response/conversation/background state, and only already-authorized function-tool definitions. Hosted tools and SDK-side tool execution are not enabled.
+- System/user/assistant text, assistant function calls, correlated function outputs, schemas, names, call IDs, and owned JSON arguments/results map through the SDK's public Responses types. Function definitions use `strict=false` to preserve AgentForge serializer/schema semantics.
+- Buffered responses map completed text, completed function calls, refusals, incomplete reasons, cancellation, provider failure, usage, and malformed/contradictory protocol states to the approved provider-neutral contracts.
+- Streaming forwards only validated text deltas. Function-argument fragments remain private and are checked against done events and the authoritative terminal response. Completion is emitted only after exactly one valid terminal event and clean SDK enumeration; EOF-before-terminal, duplicate/post-terminal events, malformed data, and contradictions fail explicitly.
+- `ModelProviderException` and `ModelProviderErrorKind` provide sanitized provider-neutral classification, transient/retry metadata, and conservatively validated provider request IDs. AgentForge-owned messages never copy provider bodies/messages; the SDK exception remains the potentially sensitive inner cause.
+- `OpenAIProviderOptions`, `OpenAIAgentModelClient`, and minimal DI registration are the only provider public surfaces. Caller-owned `ResponsesClient` construction is supported with an explicit ownership boundary for endpoint and retry policy.
+- The Responses API remains marked experimental by SDK 2.14.0. `OPENAI001` is suppressed only in the provider project, with an upgrade-review comment; tests acknowledge it locally per source file.
+- No live OpenAI call, Microsoft.Extensions.AI adapter, beginner facade, provider-managed conversation, retry/fallback, hosted tool, or Increment 6 capability was added.
 
 ## Verified Phase 2 Increment 4 implementation
 
@@ -21,7 +30,7 @@ The documentation-only Increment 5 SDK investigation is complete. It recommends 
 - Invalid typed arguments fail with `InvalidToolArguments` and a fixed redacted message. Existing untyped tools remain compatible.
 - Typed invocation deserializes and serializes with the frozen metadata, propagates cancellation, preserves execution/tool-call identifiers, and returns owned JSON through the existing `ToolResult` contract.
 - Hosting adds only the non-generic `AddAgentTool(IAgentTool)` instance overload. Registration does not authorize a tool; agent allow-lists remain mandatory.
-- No OpenAI provider, Microsoft.Extensions.AI adapter, beginner facade, retry, persistence, parallel execution, or other later-increment capability was added.
+- No Microsoft.Extensions.AI adapter, beginner facade, retry, persistence, parallel execution, or other later-increment capability was added.
 
 ## Verified Phase 1 implementation
 
@@ -202,11 +211,11 @@ dotnet test AgentForge.slnx --configuration Release --no-build
 Result:
 
 ```text
-Passed!  - Failed: 0, Passed: 125, Skipped: 0, Total: 125
+Passed!  - Failed: 0, Passed: 157, Skipped: 0, Total: 157
 Target: .NETCoreApp,Version=v10.0
 ```
 
-The 125 tests include all 95 existing Phase 1 and Increment 1-3 tests plus 30 typed-tool tests covering deterministic schema generation, naming, required/nullability rules, string enums, numeric handling, nested objects and lists, unknown-property rejection, unsupported contracts/converters, depth and property-count bounds, frozen options, typed invocation, cancellation/context propagation, JSON ownership, DI registration, atomic non-streaming and streaming rejection, legacy-tool compatibility, redaction, and concurrent isolation.
+The 157 tests include 95 Core/runtime tests, 30 typed-tool tests, and 32 OpenAI provider tests. Provider coverage uses the SDK's public transport seam with synthetic JSON/SSE and covers stateless request serialization, transcript/tool correlation, buffered finish states, usage, HTTP/provider classification, request-ID and retry metadata sanitization, zero hidden retries, buffered/streaming transport cancellation, private streamed function arguments, byte-fragmented SSE, terminal protocol failures, redaction, DI, and concurrent isolation.
 
 Console sample:
 
@@ -221,13 +230,13 @@ Result:
 Model calls: 2; Tool calls: 1
 ```
 
-These results verify the Phase 1 implementation and Phase 2 Increments 1-4 on the listed SDK and local Windows environment. They do not verify behavior on other operating systems, other SDK patches, external model providers, or distributed infrastructure.
+These results verify the Phase 1 implementation and Phase 2 Increments 1-5 on the listed SDK and local Windows environment. Provider tests are deterministic and credential-free; they do not constitute live OpenAI verification or verify behavior on other operating systems, SDK versions, external providers, or distributed infrastructure.
 
 ## Unimplemented features
 
 The following are intentionally not implemented and have not been verified:
 
-- Real OpenAI or other networked LLM providers.
+- Other networked LLM providers and live OpenAI verification.
 - Microsoft.Extensions.AI adapters.
 - Streaming tool output.
 - Multi-agent orchestration, handoffs, supervisors, or teams.
@@ -256,6 +265,9 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 - Streaming text deltas are provisional and are not returned as recovery state after failure.
 - Stream cancellation is cooperative. Local disposal prevents later Core work, but cannot guarantee cancellation of remote work already accepted by a provider.
 - The scripted model client is a deterministic development/test component and does not demonstrate provider protocol compatibility.
+- The OpenAI Responses SDK surface is experimental in pinned version 2.14.0 and must be contract-reviewed before upgrade.
+- Caller-owned `ResponsesClient` instances cannot be audited by AgentForge for endpoint security or disabled retry policy.
+- Typed streaming does not expose a convenient raw response header surface, so streaming provider request IDs remain unavailable.
 - Metadata-only structured logging and redaction are regression tested, but there is no dedicated telemetry package or configurable content-capture policy.
 - The repository-local `.dotnet-home` directory is an ignored CLI artifact and is not product source.
 
@@ -266,10 +278,10 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 - Provider capability negotiation beyond the implemented `IStreamingAgentModelClient` interface check is not implemented.
 - Usage normalization across providers is not defined.
 - Content logging/redaction remains deny-by-default but has no configurable policy model.
-- Integration tests do not exist because Phase 1 contains no external adapter.
+- Live integration tests remain a separately authorized Increment 8 concern; Increment 5 verification is offline.
 
 None of these outstanding issues invalidate the verified Phase 1 acceptance results, but they must not be described as implemented capabilities.
 
 ## Next recommended task
 
-Stop after Increment 4. The next recommended task is a rigorous read-only review of the typed-tool contracts, schema/validator consistency, atomic prevalidation, and security boundaries. Phase 2 Increment 5 must not begin without explicit approval, including resolution of its transport-test seam.
+Stop after Increment 5. Perform architectural review of the OpenAI adapter, especially the experimental SDK pin, terminal streaming validation, error redaction, and caller-owned client boundary. Increment 6 must not begin without explicit approval.

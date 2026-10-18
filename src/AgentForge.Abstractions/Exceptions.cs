@@ -1,5 +1,55 @@
 namespace AgentForge.Abstractions;
 
+/// <summary>Classifies a failure reported by a model-provider adapter.</summary>
+public enum ModelProviderErrorKind
+{
+    /// <summary>Provider authentication failed.</summary>
+    Authentication,
+    /// <summary>The credential is authenticated but not authorized.</summary>
+    Authorization,
+    /// <summary>The provider rejected the request.</summary>
+    InvalidRequest,
+    /// <summary>The selected model was not found.</summary>
+    ModelNotFound,
+    /// <summary>The provider rate limit was reached.</summary>
+    RateLimited,
+    /// <summary>The operation timed out independently of caller cancellation.</summary>
+    Timeout,
+    /// <summary>The provider service was unavailable.</summary>
+    ServiceUnavailable,
+    /// <summary>The transport failed.</summary>
+    Transport,
+    /// <summary>The provider returned malformed or contradictory protocol data.</summary>
+    Protocol,
+    /// <summary>The failure could not be classified safely.</summary>
+    Unknown
+}
+
+/// <summary>A sanitized failure raised by a model-provider adapter.</summary>
+public sealed class ModelProviderException : Exception
+{
+    /// <summary>Creates a provider-adapter exception.</summary>
+    public ModelProviderException(ModelProviderErrorKind kind, bool isTransient, string message,
+        Exception? innerException = null, TimeSpan? retryAfter = null, string? providerRequestId = null)
+        : base(message, innerException)
+    {
+        if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
+        Kind = kind;
+        IsTransient = isTransient;
+        RetryAfter = retryAfter;
+        ProviderRequestId = providerRequestId;
+    }
+
+    /// <summary>Gets the stable failure classification.</summary>
+    public ModelProviderErrorKind Kind { get; }
+    /// <summary>Gets whether retrying may succeed. AgentForge does not retry automatically.</summary>
+    public bool IsTransient { get; }
+    /// <summary>Gets the provider retry delay, when safely available.</summary>
+    public TimeSpan? RetryAfter { get; }
+    /// <summary>Gets a sanitized provider request identifier, when available.</summary>
+    public string? ProviderRequestId { get; }
+}
+
 /// <summary>Identifies a stable runtime policy or contract failure.</summary>
 public enum AgentExecutionErrorCode
 {
