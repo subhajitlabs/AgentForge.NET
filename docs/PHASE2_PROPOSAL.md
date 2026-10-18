@@ -518,7 +518,7 @@ Validation must enforce the generated subset directly rather than accepting arbi
 
 ```csharp
 services.AddAgentTool(AgentTool.Create<AddArguments, AddResult>(
-    "calculator.add",
+    "calculator_add",
     "Adds two decimal numbers.",
     static (arguments, context, cancellationToken) =>
         ValueTask.FromResult(new AddResult(arguments.Left + arguments.Right))));

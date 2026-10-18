@@ -7,5 +7,21 @@
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
     <LangVersion>latest</LangVersion>
+    <Version>0.2.0-preview.1</Version>
+    <PackageVersion>0.2.0-preview.1</PackageVersion>
+    <Authors>Subhajit Labs</Authors>
+    <Copyright>Copyright (c) 2026 Subhajit Labs</Copyright>
+    <Product>AgentForge.NET</Product>
+    <RepositoryUrl>https://github.com/subhajitlabs/AgentForge.NET</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Link="README.md" />
+  </ItemGroup>
 </Project>

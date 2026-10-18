@@ -1,0 +1,94 @@
+[CmdletBinding()]
+param(
+    [Parameter()]
+    [string] $PackageDirectory = (Join-Path $PSScriptRoot '..\artifacts\packages')
+)
+
+$ErrorActionPreference = 'Stop'
+
+$expectedPackageIds = @(
+    'AgentForge.Abstractions'
+    'AgentForge.Core'
+    'AgentForge.Hosting'
+    'AgentForge.Tools'
+    'AgentForge.Providers.OpenAI'
+    'AgentForge.Adapters.MicrosoftExtensionsAI'
+)
+$expectedVersion = '0.2.0-preview.1'
+$errors = [System.Collections.Generic.List[string]]::new()
+
+$resolvedPackageDirectory = [System.IO.Path]::GetFullPath($PackageDirectory)
+if (-not (Test-Path -LiteralPath $resolvedPackageDirectory -PathType Container)) {
+    throw "Package directory does not exist: $resolvedPackageDirectory"
+}
+
+$packages = @(Get-ChildItem -LiteralPath $resolvedPackageDirectory -Filter '*.nupkg' -File |
+    Where-Object { -not $_.Name.EndsWith('.snupkg', [StringComparison]::OrdinalIgnoreCase) })
+$symbols = @(Get-ChildItem -LiteralPath $resolvedPackageDirectory -Filter '*.snupkg' -File)
+$expectedPackageNames = @($expectedPackageIds | ForEach-Object { "$($_).$expectedVersion.nupkg" })
+$expectedSymbolNames = @($expectedPackageIds | ForEach-Object { "$($_).$expectedVersion.snupkg" })
+
+$actualPackageNames = @($packages.Name | Sort-Object)
+$actualSymbolNames = @($symbols.Name | Sort-Object)
+if (Compare-Object ($expectedPackageNames | Sort-Object) $actualPackageNames) {
+    $errors.Add("Expected exactly these library packages: $($expectedPackageNames -join ', '). Actual: $($actualPackageNames -join ', ').")
+}
+if (Compare-Object ($expectedSymbolNames | Sort-Object) $actualSymbolNames) {
+    $errors.Add("Expected exactly these symbol packages: $($expectedSymbolNames -join ', '). Actual: $($actualSymbolNames -join ', ').")
+}
+
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+foreach ($package in $packages) {
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($package.FullName)
+    try {
+        $nuspecEntry = @($archive.Entries | Where-Object FullName -Like '*.nuspec')
+        if ($nuspecEntry.Count -ne 1) {
+            $errors.Add("$($package.Name): expected one nuspec.")
+            continue
+        }
+
+        $reader = [System.IO.StreamReader]::new($nuspecEntry[0].Open())
+        try { [xml] $nuspec = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        $metadata = $nuspec.package.metadata
+        $id = [string] $metadata.id
+        if ($expectedPackageIds -notcontains $id) { $errors.Add("$($package.Name): unexpected package ID '$id'.") }
+        if ([string] $metadata.version -ne $expectedVersion) { $errors.Add("${id}: wrong version '$($metadata.version)'.") }
+        if ([string] $metadata.authors -ne 'Subhajit Labs') { $errors.Add("${id}: authors metadata is incorrect.") }
+        if ([string] $metadata.copyright -ne 'Copyright (c) 2026 Subhajit Labs') {
+            $errors.Add("${id}: copyright metadata is incorrect.")
+        }
+        if ([string]::IsNullOrWhiteSpace([string] $metadata.description) -or [string] $metadata.description -eq 'Package Description') {
+            $errors.Add("${id}: package description is missing or placeholder text.")
+        }
+        if ([string] $metadata.readme -ne 'README.md') { $errors.Add("${id}: README metadata is missing.") }
+        if ($null -eq $metadata.license -or [string] $metadata.license.type -ne 'expression' -or [string] $metadata.license.'#text' -ne 'MIT') {
+            $errors.Add("${id}: MIT license expression metadata is missing or incorrect.")
+        }
+        if ($null -eq $metadata.repository -or [string] $metadata.repository.type -ne 'git' -or
+            [string] $metadata.repository.url -ne 'https://github.com/subhajitlabs/AgentForge.NET') {
+            $errors.Add("${id}: repository metadata is missing or incorrect.")
+        }
+
+        $entryNames = @($archive.Entries.FullName)
+        if ($entryNames -notcontains 'README.md') { $errors.Add("${id}: README.md is not in the package.") }
+        if ($entryNames -notcontains "lib/net10.0/$id.xml") { $errors.Add("${id}: XML documentation is not in the package.") }
+
+        foreach ($dependency in @($metadata.dependencies.group.dependency)) {
+            if ([string] $dependency.id -like 'AgentForge.*' -and [string] $dependency.version -ne $expectedVersion) {
+                $errors.Add("${id}: internal dependency '$($dependency.id)' has version '$($dependency.version)'.")
+            }
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
+if ($errors.Count -gt 0) {
+    $errors | ForEach-Object { Write-Error $_ -ErrorAction Continue }
+    exit 1
+}
+
+Write-Host "Verified exactly six AgentForge.NET $expectedVersion packages and symbol packages with expected metadata and contents."

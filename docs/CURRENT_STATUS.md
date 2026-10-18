@@ -1,7 +1,7 @@
 # AgentForge.NET Current Status
 
 Status date: 2026-10-18  
-Current milestone: Phase 2 Increment 8 (Opt-in Live Verification) implemented; live execution not performed
+Current milestone: Phase 2 Increment 8 implemented; release-blocker remediation in progress
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
@@ -11,11 +11,11 @@ This document describes the implementation currently present in this repository.
 
 - `tests/AgentForge.LiveVerification` is a dedicated executable rather than a test project. It reaches the official OpenAI adapter only through keyed public `IAgent` facades and the existing buffered/streaming runtime and typed-tool engine.
 - Provider construction requires all four gates: `--live`, `AGENTFORGE_RUN_LIVE_TESTS=true`, nonempty `OPENAI_API_KEY`, and nonempty `OPENAI_MODEL`. A closed gate exits before construction or HTTP access without printing values.
-- Four scenarios run sequentially: buffered text, streaming text with exactly one terminal event, a typed `calculator.add` round trip, and deterministic pre-cancelled caller-token propagation.
+- Four scenarios run sequentially: buffered text, streaming text with exactly one terminal event, a typed `calculator_add` round trip, and deterministic pre-cancelled caller-token propagation.
 - Text/cancellation scenarios allow one model call, the tool scenario allows two, every scenario allows at most one tool call, and each has a 30-second timeout. There are no automatic retries. The current public provider configuration cannot set maximum output tokens; this is documented rather than claimed as enforced.
 - Output is limited to safe names/statuses, call counts, optional usage, and fixed classifications. Tool non-selection is inconclusive and is not retried; fail or inconclusive returns nonzero.
 - `tests/AgentForge.LiveVerification.Tests` provides offline guard coverage for the gates, early exit, whitespace configuration, fixed limits, redacted reporting, and exclusion of the executable from test discovery.
-- Live verification has **not been executed**. Offline build/test evidence does not prove live OpenAI compatibility.
+- The user reports a successful post-fix live run against `gpt-4o-mini`: buffered passed with 1 model call and 0 tool calls; streaming passed with 1 model call and 0 tool calls; the typed-tool round trip passed with 2 model calls and 1 tool call; and caller cancellation passed with 0 completed model calls and 0 tool calls. This was not independently rerun during the release audit. No run timestamp or exact commit was supplied. The reported source state followed the underscore tool-name correction and is distinct from the audited commit `f326b9030d1da5cd32e43d15910d72831577399d` plus its recorded working-tree changes. The pre-cancelled-token scenario proves local propagation and no successful completion, not cancellation of remote work already accepted by OpenAI.
 
 ## Verified Phase 2 Increment 7 implementation
 
@@ -46,6 +46,7 @@ This document describes the implementation currently present in this repository.
 - Provider-owned construction validates and snapshots the API key and endpoint, requires HTTPS except for explicitly enabled loopback HTTP, rejects URI user-info/fragments, and disables SDK retries with `ClientRetryPolicy(0)`.
 - Every request is stateless and sends the full ordered AgentForge transcript with `store=false`, `parallel_tool_calls=false`, no previous response/conversation/background state, and only already-authorized function-tool definitions. Hosted tools and SDK-side tool execution are not enabled.
 - System/user/assistant text, assistant function calls, correlated function outputs, schemas, names, call IDs, and owned JSON arguments/results map through the SDK's public Responses types. Function definitions use `strict=false` to preserve AgentForge serializer/schema semantics.
+- OpenAI function names are validated before transport against the provider's 1-64 character ASCII letter/digit/underscore/hyphen constraint. Provider-neutral tool names may be broader, but OpenAI-bound agents must use names in that subset.
 - Buffered responses map completed text, completed function calls, refusals, incomplete reasons, cancellation, provider failure, usage, and malformed/contradictory protocol states to the approved provider-neutral contracts.
 - Streaming forwards only validated text deltas. Function-argument fragments remain private and are checked against done events and the authoritative terminal response. Completion is emitted only after exactly one valid terminal event and clean SDK enumeration; EOF-before-terminal, duplicate/post-terminal events, malformed data, and contradictions fail explicitly.
 - `ModelProviderException` and `ModelProviderErrorKind` provide sanitized provider-neutral classification, transient/retry metadata, and conservatively validated provider request IDs. AgentForge-owned messages never copy provider bodies/messages; the SDK exception remains the potentially sensitive inner cause.
@@ -248,7 +249,7 @@ Passed!  - Failed: 0, Passed: 201, Skipped: 0, Total: 201
 Target: .NETCoreApp,Version=v10.0
 ```
 
-The 201 tests include 104 Core/runtime/Hosting tests, 30 typed-tool tests, 32 OpenAI provider tests, 23 Microsoft.Extensions.AI adapter tests, and 12 live-verification guard tests. Hosting coverage includes buffered and streaming facade delegation, fresh execution state, cancellation, keyed isolation, duplicate/missing keys, unknown tools, multiple-client rejection, and unsupported streaming. Adapter and guard coverage remains deterministic, credential-free, and network-free.
+The 203 tests include 104 Core/runtime/Hosting tests, 31 typed-tool tests, 33 OpenAI provider tests, 23 Microsoft.Extensions.AI adapter tests, and 12 live-verification guard tests. Hosting coverage includes buffered and streaming facade delegation, fresh execution state, cancellation, keyed isolation, duplicate/missing keys, unknown tools, multiple-client rejection, and unsupported streaming. Adapter and guard coverage remains deterministic, credential-free, and network-free.
 
 Console sample:
 
@@ -269,7 +270,7 @@ These results verify the offline implementation through Phase 2 Increment 8 on t
 
 The following are intentionally not implemented and have not been verified:
 
-- Other networked LLM providers and live OpenAI verification.
+- Other networked LLM providers and independently reproduced live OpenAI verification.
 - Streaming tool output.
 - Multi-agent orchestration, handoffs, supervisors, or teams.
 - Graph/DAG workflows, branches, fan-out, or fan-in.
@@ -313,7 +314,7 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 - Provider capability negotiation beyond the implemented `IStreamingAgentModelClient` interface check is not implemented.
 - Usage normalization across providers is not defined.
 - Content logging/redaction remains deny-by-default but has no configurable policy model.
-- Live verification is separately opt-in and has not been executed; its deterministic guard coverage is offline only.
+- Live verification is separately opt-in. The post-fix 4/4 result is user-reported rather than independently reproduced; deterministic guard coverage remains offline only.
 
 None of these outstanding issues invalidate the verified Phase 1 acceptance results, but they must not be described as implemented capabilities.
 

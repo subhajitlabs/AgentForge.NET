@@ -9,7 +9,7 @@ namespace AgentForge.LiveVerification;
 
 internal static class Program
 {
-    private const string CalculatorToolName = "calculator.add";
+    private const string CalculatorToolName = "calculator_add";
 
     public static async Task<int> Main(string[] args)
     {
@@ -57,7 +57,7 @@ internal static class Program
                 .UseModel(settings.Model!)
                 .WithLimits(LiveVerificationLimits.TextModelCalls, LiveVerificationLimits.MaxToolCalls))
             .AddAgentDefinition("live-tool", agent => agent
-                .WithInstructions("You must use calculator.add for all arithmetic. Do not calculate mentally.")
+                .WithInstructions("You must use calculator_add for all arithmetic. Do not calculate mentally.")
                 .UseModel(settings.Model!)
                 .AllowTool(CalculatorToolName)
                 .WithLimits(LiveVerificationLimits.ToolModelCalls, LiveVerificationLimits.MaxToolCalls))
@@ -135,7 +135,7 @@ internal static class Program
         {
             using var timeout = new CancellationTokenSource(LiveVerificationLimits.ScenarioTimeout);
             var result = await provider.GetRequiredKeyedService<IAgent>("live-tool")
-                .RunAsync("Use calculator.add to add 20 and 22, then report the numeric result.", timeout.Token);
+                .RunAsync("Use calculator_add to add 20 and 22, then report the numeric result.", timeout.Token);
             if (invocationCount() == 0)
                 return new(name, VerificationStatus.Inconclusive, result.ModelCalls, result.ToolCalls, result.Usage, "tool-not-selected");
             var passed = result.ToolCalls == 1
@@ -178,6 +178,8 @@ internal static class Program
     private static string Classify(Exception exception) => exception switch
     {
         OperationCanceledException => "timeout-or-cancellation",
+        AgentProviderException { InnerException: ModelProviderException provider } =>
+            $"provider-{provider.Kind.ToString().ToLowerInvariant()}",
         AgentProviderException => "provider",
         AgentExecutionException => "execution",
         AgentToolException => "tool",

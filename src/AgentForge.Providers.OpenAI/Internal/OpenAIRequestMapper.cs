@@ -47,12 +47,26 @@ internal static class OpenAIRequestMapper
         }
 
         foreach (var tool in request.AvailableTools)
+        {
+            if (!IsValidFunctionName(tool.Name))
+            {
+                throw new ModelProviderException(
+                    ModelProviderErrorKind.InvalidRequest,
+                    false,
+                    "An available tool name is not supported by the OpenAI provider.");
+            }
+
             options.Tools.Add(ResponseTool.CreateFunctionTool(
                 tool.Name,
                 BinaryData.FromString(tool.ParametersSchema.GetRawText()),
                 strictModeEnabled: false,
                 functionDescription: tool.Description));
+        }
 
         return options;
     }
+
+    private static bool IsValidFunctionName(string name) =>
+        name.Length is > 0 and <= 64
+        && name.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-');
 }

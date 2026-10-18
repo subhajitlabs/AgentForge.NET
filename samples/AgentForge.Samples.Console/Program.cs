@@ -7,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 var addCall = new ToolCall(
     "call-1",
-    "calculator.add",
+    "calculator_add",
     JsonSerializer.SerializeToElement(new AddArguments(20, 22)));
 
 var model = new ScriptedAgentModelClient(
@@ -24,7 +24,7 @@ var model = new ScriptedAgentModelClient(
 var services = new ServiceCollection()
     .AddSingleton<IAgentModelClient>(model)
     .AddAgentTool(AgentTool.Create<AddArguments, AddResult>(
-        "calculator.add",
+        "calculator_add",
         "Adds two numbers.",
         static (arguments, _, cancellationToken) =>
         {
@@ -35,7 +35,7 @@ var services = new ServiceCollection()
     .AddAgentDefinition("calculator", agent => agent
         .WithInstructions("Use the calculator tool for arithmetic.")
         .UseModel("fake-calculator-model")
-        .AllowTool("calculator.add")
+        .AllowTool("calculator_add")
         .WithLimits(maxModelCalls: 3, maxToolCalls: 2))
     .BuildServiceProvider();
 

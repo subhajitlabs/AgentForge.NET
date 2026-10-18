@@ -56,6 +56,26 @@ public sealed class OpenAIProviderTests
     }
 
     [Fact]
+    public async Task CompleteAsync_DottedFunctionName_RejectsBeforeTransport()
+    {
+        var handler = new TestHandler((_, _) => Task.FromResult(TestTransport.Json(HttpStatusCode.OK, CompletedText("unused"))));
+        var client = TestTransport.Create(handler);
+        using var schema = JsonDocument.Parse("{\"type\":\"object\"}");
+        var request = new ModelRequest(
+            ExecutionId.New(),
+            new ModelId("gpt-test"),
+            [new UserMessage("content-sentinel")],
+            [new ToolDescriptor("calculator.add", "description", schema.RootElement)]);
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => client.CompleteAsync(request));
+
+        Assert.Equal(ModelProviderErrorKind.InvalidRequest, exception.Kind);
+        Assert.Equal(0, handler.Calls);
+        Assert.DoesNotContain("calculator.add", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("content-sentinel", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CompleteAsync_FunctionCall_UsesCallIdAndOwnedArguments()
     {
         const string json = """

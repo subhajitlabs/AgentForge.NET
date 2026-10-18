@@ -20,48 +20,99 @@ dotnet build AgentForge.slnx --configuration Release
 dotnet test AgentForge.slnx --configuration Release --no-build
 ```
 
-## Quick start
+## Install from NuGet
 
-Register exactly one provider-neutral model client, the runtime, and a named agent:
+All packages in this preview use version `0.2.0-preview.1`. Install the packages needed by the scenario:
+
+```powershell
+# Offline scripted model, runtime, named-agent hosting, and typed tools
+dotnet add package AgentForge.Hosting --version 0.2.0-preview.1
+dotnet add package AgentForge.Tools --version 0.2.0-preview.1
+
+# Add one provider adapter
+dotnet add package AgentForge.Providers.OpenAI --version 0.2.0-preview.1
+# or
+dotnet add package AgentForge.Adapters.MicrosoftExtensionsAI --version 0.2.0-preview.1
+```
+
+`AgentForge.Hosting` transitively supplies `AgentForge.Core` and `AgentForge.Abstractions`. Install `AgentForge.Tools` only when using typed tools. Applications that need contracts without the runtime can reference `AgentForge.Abstractions` directly.
+
+## Complete offline quick start
+
+Create a .NET 10 console application, install `AgentForge.Hosting`, and replace `Program.cs` with this complete credential-free example:
 
 ```csharp
-var services = new ServiceCollection()
-    .AddSingleton<IAgentModelClient>(modelClient)
+using AgentForge.Abstractions;
+using AgentForge.Core;
+using AgentForge.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+
+var model = new ScriptedAgentModelClient(
+[
+    (_, _) => Task.FromResult(ModelResponse.Completed(
+        AssistantMessage.FromText("Reset instructions are available on the account page.")))
+]);
+
+await using var provider = new ServiceCollection()
+    .AddSingleton<IAgentModelClient>(model)
     .AddAgentForge()
     .AddAgentDefinition("support", agent => agent
         .WithInstructions("Answer concisely.")
-        .UseModel("configured-model")
-        .WithLimits(maxModelCalls: 4, maxToolCalls: 2))
+        .UseModel("offline-script")
+        .WithLimits(maxModelCalls: 1, maxToolCalls: 1))
     .BuildServiceProvider();
 
-var agent = services.GetRequiredKeyedService<IAgent>("support");
-var result = await agent.RunAsync("How can I reset my password?", cancellationToken);
+var agent = provider.GetRequiredKeyedService<IAgent>("support");
+var result = await agent.RunAsync("How can I reset my password?");
+Console.WriteLine(result.FinalMessage.Text);
 ```
 
 Each call creates a fresh run and preserves the configured model/tool limits. There is no unkeyed default agent. Duplicate agent keys, missing definitions, unknown allowed tools, and multiple model clients fail deterministically before a model invocation.
 
 ## Typed tools and authorization
 
-```csharp
-services.AddAgentTool(AgentTool.Create<AddArguments, AddResult>(
-    "calculator.add",
-    "Adds two numbers.",
-    static (args, context, token) =>
-        ValueTask.FromResult(new AddResult(args.Left + args.Right))));
+Install both `AgentForge.Hosting` and `AgentForge.Tools`. The following registration can replace the service-provider construction in the offline quick start:
 
-services.AddAgentDefinition("calculator", agent => agent
-    .WithInstructions("Use the calculator for arithmetic.")
-    .UseModel("configured-model")
-    .AllowTool("calculator.add")
-    .WithLimits(3, 2));
+```csharp
+using AgentForge.Tools;
+
+await using var provider = new ServiceCollection()
+    .AddSingleton<IAgentModelClient>(model)
+    .AddAgentTool(AgentTool.Create<AddArguments, AddResult>(
+        "calculator_add",
+        "Adds two numbers.",
+        static (args, _, cancellationToken) =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new AddResult(args.Left + args.Right));
+        }))
+    .AddAgentForge()
+    .AddAgentDefinition("calculator", agent => agent
+        .WithInstructions("Use the calculator for arithmetic.")
+        .UseModel("configured-model")
+        .AllowTool("calculator_add")
+        .WithLimits(maxModelCalls: 3, maxToolCalls: 2))
+    .BuildServiceProvider();
+
+internal sealed record AddArguments(decimal Left, decimal Right);
+internal sealed record AddResult(decimal Value);
 ```
 
 Registration makes a tool available to the application; only `AllowTool` authorizes it for that agent. Arguments remain untrusted and typed validation occurs atomically before any tool in a requested batch executes.
 
 ## Streaming
 
+The registered model client must implement `IStreamingAgentModelClient`. The OpenAI and Microsoft.Extensions.AI adapters do; for credential-free development use `ScriptedStreamingAgentModelClient` from `AgentForge.Core`:
+
 ```csharp
-await foreach (var update in agent.StreamAsync("Hello", cancellationToken))
+var model = ScriptedStreamingAgentModelClient.FromEvents(
+[
+    new ModelTextDelta("Hello"),
+    new ModelResponseCompleted(ModelResponse.Completed(
+        AssistantMessage.FromText("Hello")))
+]);
+
+await foreach (var update in agent.StreamAsync("Hello"))
 {
     if (update is AssistantTextDelta delta)
         Console.Write(delta.Text);
@@ -74,7 +125,34 @@ A non-streaming provider fails with `CapabilityNotSupported`; AgentForge never s
 
 ## Providers
 
-For OpenAI, set `OPENAI_API_KEY` and the deployment-specific `OPENAI_MODEL`; never commit credentials. Register `AddOpenAIModelClient(...)` before `AddAgentForge()`. The opt-in OpenAI sample does not run during default verification and no live provider call is claimed.
+For OpenAI, install `AgentForge.Hosting` and `AgentForge.Providers.OpenAI`, set `OPENAI_API_KEY` and the deployment-specific `OPENAI_MODEL`, and never commit credentials:
+
+```csharp
+using AgentForge.Abstractions;
+using AgentForge.Hosting;
+using AgentForge.Providers.OpenAI;
+using Microsoft.Extensions.DependencyInjection;
+
+var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY")
+    ?? throw new InvalidOperationException("OPENAI_API_KEY is required.");
+var model = Environment.GetEnvironmentVariable("OPENAI_MODEL")
+    ?? throw new InvalidOperationException("OPENAI_MODEL is required.");
+
+await using var provider = new ServiceCollection()
+    .AddOpenAIModelClient(options => options.ApiKey = apiKey)
+    .AddAgentForge()
+    .AddAgentDefinition("openai", agent => agent
+        .WithInstructions("Answer concisely.")
+        .UseModel(model)
+        .WithLimits(maxModelCalls: 4, maxToolCalls: 2))
+    .BuildServiceProvider();
+
+var agent = provider.GetRequiredKeyedService<IAgent>("openai");
+var result = await agent.RunAsync("Reply with a short greeting.");
+Console.WriteLine(result.FinalMessage.Text);
+```
+
+The adapter uses the OpenAI Responses API, disables SDK retries for AgentForge-owned clients, disables provider storage and parallel tool calls, and keeps provider SDK types out of provider-neutral contracts.
 
 ### Opt-in OpenAI live verification
 
@@ -91,9 +169,34 @@ Without every gate, the executable exits before provider construction or HTTP ac
 
 Reports contain only scenario status, call counts, optional token usage, and fixed error classifications. `Pass` means observable checks held; `Fail` means a request or check failed; `Inconclusive` means the probabilistic model did not select the calculator tool; `Skipped` is reserved for a scenario that cannot run. Failed or inconclusive scenarios return nonzero, and no scenario is retried. Credentials, headers, raw requests/responses, tool arguments, provider exception messages, and inner exceptions are not printed or persisted.
 
-Live verification has been implemented but **has not been executed**. Offline tests validate safeguards and deterministic behavior, not live API compatibility. Cancellation uses an already-cancelled caller token; it proves local propagation and absence of successful completion, not cancellation of remote work already accepted by a provider.
+The user reported a successful post-fix run against `gpt-4o-mini`: buffered passed with 1 model call and 0 tool calls; streaming passed with 1 model call and 0 tool calls; the typed-tool round trip passed with 2 model calls and 1 tool call; and caller cancellation passed with 0 completed model calls and 0 tool calls. This is user-reported evidence, not an independently rerun audit result. No run timestamp or exact commit was supplied. The run used source after the provider-compatible underscore tool-name correction, while the release audit identifies commit `f326b9030d1da5cd32e43d15910d72831577399d` plus uncommitted working-tree changes as its separate audited state.
 
-For Microsoft.Extensions.AI, pass a raw compatible `IChatClient` to `AddMicrosoftExtensionsAIModelClient`. Clients wrapped in automatic tool-invocation middleware are unsupported because AgentForge must remain the sole tool authorization and execution boundary.
+Cancellation uses an already-cancelled caller token; it proves local propagation and absence of successful completion, not cancellation of remote work already accepted by OpenAI.
+
+For Microsoft.Extensions.AI, install `AgentForge.Hosting` and `AgentForge.Adapters.MicrosoftExtensionsAI`, then pass a raw compatible `IChatClient` to `AddMicrosoftExtensionsAIModelClient` before `AddAgentForge`:
+
+```csharp
+using AgentForge.Abstractions;
+using AgentForge.Adapters.MicrosoftExtensionsAI;
+using AgentForge.Hosting;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+
+// Obtain a raw IChatClient from your chosen Microsoft.Extensions.AI provider.
+IChatClient chatClient = /* provider-specific construction */;
+await using var provider = new ServiceCollection()
+    .AddMicrosoftExtensionsAIModelClient(chatClient)
+    .AddAgentForge()
+    .AddAgentDefinition("interop", agent => agent
+        .WithInstructions("Answer concisely.")
+        .UseModel("client-selected-model")
+        .WithLimits(maxModelCalls: 2, maxToolCalls: 1))
+    .BuildServiceProvider();
+
+var result = await provider.GetRequiredKeyedService<IAgent>("interop").RunAsync("Hello");
+```
+
+The `IChatClient` construction is intentionally provider-specific application code; AgentForge does not define a convenience factory for it. Clients wrapped in automatic tool-invocation middleware are unsupported because AgentForge must remain the sole tool authorization and execution boundary. The caller owns the `IChatClient` lifetime. See the complete credential-free implementation in `samples/AgentForge.Samples.MicrosoftExtensionsAI`.
 
 Run the deterministic calculator sample with:
 
@@ -102,5 +205,11 @@ dotnet run --project samples/AgentForge.Samples.Console --configuration Release
 ```
 
 The credential-free streaming and interoperability samples are under `samples/AgentForge.Samples.Streaming` and `samples/AgentForge.Samples.MicrosoftExtensionsAI`. The OpenAI sample is under `samples/AgentForge.Samples.OpenAI` and exits without network access unless both environment variables are supplied.
+
+## Supported scope and limitations
+
+This preview supports in-process buffered and streaming runs, one explicitly registered model client per composition, keyed named agents, independent model/tool-call limits, deny-by-default sequential tools, typed tool validation, the OpenAI Responses adapter, and raw `Microsoft.Extensions.AI.IChatClient` interoperability.
+
+It does not provide multi-agent orchestration, routing or fallback, retries, durable execution, persistence or memory, distributed execution, automatic MEAI tool middleware, parallel tools, process sandboxing, or framework-enforced token/output/payload-size limits. Callers must apply cancellation/timeouts and provider-side output limits where available. Streaming deltas are provisional; only `AgentRunCompleted` is authoritative. Tools are trusted in-process application code.
 
 See [the architecture document](docs/architecture.md) for lifecycle invariants, package boundaries, security constraints, non-goals, and planned phases.

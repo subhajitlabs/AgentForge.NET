@@ -28,6 +28,26 @@ public sealed class TypedToolTests
         Assert.Contains("name", schema.RootElement.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
     }
 
+    [Fact]
+    public void Create_IntegerRecord_ProducesOpenAICompatibleSchema()
+    {
+        var tool = AgentTool.Create<AddArguments, SimpleResult>(
+            "calculator_add",
+            "Adds two integers.",
+            static (arguments, _, _) => ValueTask.FromResult(new SimpleResult(arguments.Left + arguments.Right)));
+
+        var schema = tool.Descriptor.ParametersSchema;
+
+        Assert.Equal("object", schema.GetProperty("type").GetString());
+        Assert.False(schema.GetProperty("additionalProperties").GetBoolean());
+        var properties = schema.GetProperty("properties");
+        Assert.Equal("integer", properties.GetProperty("Left").GetProperty("type").GetString());
+        Assert.Equal("integer", properties.GetProperty("Right").GetProperty("type").GetString());
+        Assert.Equal(
+            ["Left", "Right"],
+            schema.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
+    }
+
     [Theory]
     [InlineData("{\"name\":\"x\",\"mode\":\"Fast\",\"values\":[1,2],\"nested\":{\"enabled\":true}}")]
     [InlineData("{\"name\":\"x\",\"mode\":\"Slow\",\"values\":[],\"nested\":null}")]
@@ -202,6 +222,7 @@ public sealed class TypedToolTests
     private sealed record NestedArguments(bool Enabled);
     private sealed record ComplexArguments(string Name, Mode Mode, List<int> Values, NestedArguments? Nested = null);
     private sealed record SimpleArguments(int Value);
+    private sealed record AddArguments(int Left, int Right);
     private sealed record SimpleResult(int Value);
     private sealed class MutableResult { public int Value { get; set; } }
     private sealed record OpenArguments<T>(T Value);
