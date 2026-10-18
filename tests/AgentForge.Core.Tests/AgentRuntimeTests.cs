@@ -115,30 +115,29 @@ public sealed class AgentRuntimeTests
     }
 
     [Theory]
-    [InlineData("duplicate")]
-    [InlineData("unauthorized")]
-    [InlineData("unregistered")]
-    [InlineData("invalid-json")]
-    public async Task RunAsync_InvalidToolBatch_ExecutesNoTools(string scenario)
+    [InlineData("duplicate", AgentExecutionErrorCode.InvalidModelResponse)]
+    [InlineData("unauthorized", AgentExecutionErrorCode.ToolNotAllowed)]
+    [InlineData("invalid-json", AgentExecutionErrorCode.InvalidModelResponse)]
+    public async Task RunAsync_InvalidToolBatch_ExecutesNoTools(
+        string scenario,
+        AgentExecutionErrorCode expectedCode)
     {
         var valid = new RecordingTool("valid");
         ToolCall bad = scenario switch
         {
             "duplicate" => Call("same", "valid"),
             "unauthorized" => Call("bad", "secret"),
-            "unregistered" => Call("bad", "missing"),
             _ => new ToolCall("bad", "valid", default)
         };
         var first = scenario == "duplicate" ? Call("same", "valid") : Call("first", "valid");
-        IReadOnlySet<string> allowed = scenario == "unregistered"
-            ? new HashSet<string>(["valid", "missing"], StringComparer.Ordinal)
-            : new HashSet<string>(["valid"], StringComparer.Ordinal);
+        IReadOnlySet<string> allowed = new HashSet<string>(["valid"], StringComparer.Ordinal);
         var model = ScriptedAgentModelClient.FromResponses(
             new ModelResponse(AssistantMessage.FromToolCalls(first, bad)));
 
-        await Assert.ThrowsAsync<AgentExecutionException>(() =>
+        var exception = await Assert.ThrowsAsync<AgentExecutionException>(() =>
             CreateRuntime(model, valid).RunAsync(Request(allowed)));
 
+        Assert.Equal(expectedCode, exception.ErrorCode);
         Assert.Empty(valid.Invocations);
     }
 

@@ -3,26 +3,87 @@ using System.Text.Json;
 namespace AgentForge.Abstractions;
 
 /// <summary>Describes a tool exposed to a model.</summary>
-/// <param name="Name">The unique ordinal tool name.</param>
-/// <param name="Description">A description for the model.</param>
-/// <param name="ParametersSchema">A JSON Schema describing accepted arguments.</param>
-public sealed record ToolDescriptor(string Name, string Description, JsonElement ParametersSchema);
+public sealed record ToolDescriptor
+{
+    /// <summary>Creates an immutable tool descriptor with an owned schema.</summary>
+    /// <param name="name">The unique ordinal tool name.</param>
+    /// <param name="description">A description for the model.</param>
+    /// <param name="parametersSchema">A JSON Schema describing accepted arguments.</param>
+    public ToolDescriptor(string name, string description, JsonElement parametersSchema)
+    {
+        Name = name;
+        Description = description;
+        ParametersSchema = JsonValueSnapshot.CloneOrUndefined(parametersSchema);
+    }
+
+    /// <summary>Gets the unique ordinal tool name.</summary>
+    public string Name { get; }
+
+    /// <summary>Gets the model-facing description.</summary>
+    public string Description { get; }
+
+    /// <summary>Gets the owned JSON parameter schema.</summary>
+    public JsonElement ParametersSchema { get; }
+}
 
 /// <summary>A model-requested tool invocation.</summary>
-/// <param name="Id">The model-generated correlation identifier.</param>
-/// <param name="Name">The requested tool name.</param>
-/// <param name="Arguments">The JSON arguments.</param>
-public sealed record ToolCall(string Id, string Name, JsonElement Arguments);
+public sealed record ToolCall
+{
+    /// <summary>Creates an immutable tool call with owned arguments.</summary>
+    /// <param name="id">The model-generated correlation identifier.</param>
+    /// <param name="name">The requested tool name.</param>
+    /// <param name="arguments">The JSON arguments.</param>
+    public ToolCall(string id, string name, JsonElement arguments)
+    {
+        Id = id;
+        Name = name;
+        Arguments = JsonValueSnapshot.CloneOrUndefined(arguments);
+    }
+
+    /// <summary>Gets the model-generated call identifier.</summary>
+    public string Id { get; }
+
+    /// <summary>Gets the requested tool name.</summary>
+    public string Name { get; }
+
+    /// <summary>Gets the owned JSON arguments.</summary>
+    public JsonElement Arguments { get; }
+}
 
 /// <summary>Context supplied to a tool implementation.</summary>
-/// <param name="ExecutionId">The current execution identifier.</param>
-/// <param name="CallId">The model-generated call identifier.</param>
-/// <param name="Arguments">The JSON arguments.</param>
-public sealed record ToolInvocation(ExecutionId ExecutionId, string CallId, JsonElement Arguments);
+public sealed record ToolInvocation
+{
+    /// <summary>Creates an immutable invocation with owned arguments.</summary>
+    /// <param name="executionId">The current execution identifier.</param>
+    /// <param name="callId">The model-generated call identifier.</param>
+    /// <param name="arguments">The JSON arguments.</param>
+    public ToolInvocation(ExecutionId executionId, string callId, JsonElement arguments)
+    {
+        ExecutionId = executionId;
+        CallId = callId;
+        Arguments = JsonValueSnapshot.CloneOrUndefined(arguments);
+    }
+
+    /// <summary>Gets the execution identifier.</summary>
+    public ExecutionId ExecutionId { get; }
+
+    /// <summary>Gets the tool-call identifier.</summary>
+    public string CallId { get; }
+
+    /// <summary>Gets the owned JSON arguments.</summary>
+    public JsonElement Arguments { get; }
+}
 
 /// <summary>A successful tool result.</summary>
-/// <param name="Value">The JSON result value.</param>
-public sealed record ToolResult(JsonElement Value);
+public sealed record ToolResult
+{
+    /// <summary>Creates an immutable result with an owned JSON value.</summary>
+    /// <param name="value">The JSON result value.</param>
+    public ToolResult(JsonElement value) => Value = JsonValueSnapshot.CloneOrUndefined(value);
+
+    /// <summary>Gets the owned JSON result.</summary>
+    public JsonElement Value { get; }
+}
 
 /// <summary>Executes one trusted application tool.</summary>
 public interface IAgentTool

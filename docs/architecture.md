@@ -131,8 +131,7 @@ public sealed record AgentExecutionLimits(int MaxModelCalls = 8, int MaxToolCall
 
 public sealed record AgentRunRequest(
     AgentDefinition Agent,
-    IReadOnlyList<AgentMessage> Messages,
-    string? ConversationId = null);
+    IReadOnlyList<AgentMessage> Messages);
 
 public interface IAgentRuntime
 {
@@ -184,15 +183,17 @@ public interface IAgentToolRegistry
 }
 ```
 
-Tool inputs and outputs use `JsonElement` at the orchestration boundary. This is intentionally less ergonomic than arbitrary generic methods but gives provider adapters a portable schema/payload shape without reflection in Core. A later tooling package can supply strongly typed delegates and JSON Schema generation without changing the runtime contract.
+Tool inputs and outputs use `JsonElement` at the orchestration boundary. Each public contract clones JSON input so its lifetime is independent of the caller's `JsonDocument`. Disposed or otherwise unusable provider JSON is represented as invalid input and rejected by the runtime. This is intentionally less ergonomic than arbitrary generic methods but gives provider adapters a portable schema/payload shape without reflection in Core. A later tooling package can supply strongly typed delegates and JSON Schema generation without changing the runtime contract.
 
-Messages are a discriminated content model rather than a single text property. An assistant message may contain text or a non-empty ordered collection of tool calls. Each tool call has a non-empty, batch-unique call ID, a tool name, and a valid JSON argument value. A tool-result message carries exactly one call ID matching a previously emitted assistant tool call and a JSON result. The runtime preserves assistant tool-call messages and correlated tool-result messages in the transcript, including ordering and identifiers, so future provider adapters can round-trip the conversation without reconstructing or losing information. Binary/multimodal content is deferred until a provider milestone establishes concrete requirements.
+Messages are a discriminated content model rather than a single text property. An assistant message may contain text or a non-empty ordered collection of tool calls. Each tool call has a non-empty, execution-unique call ID, a tool name, and a valid JSON argument value. A tool-result message carries exactly one call ID matching a previously emitted assistant tool call and a JSON result. The runtime preserves assistant tool-call messages and correlated tool-result messages in the transcript, including ordering and identifiers, so future provider adapters can round-trip the conversation without reconstructing or losing information. Binary/multimodal content is deferred until a provider milestone establishes concrete requirements.
+
+All ordered public collections are backed by non-mutable read-only snapshots, tool allow-lists are frozen snapshots, and JSON values are owned clones. Providers and consumers cannot mutate runtime state by casting a public collection interface or disposing an originating `JsonDocument`.
 
 Strict model-response invariants are:
 
 1. The response contains exactly one assistant message.
 2. The assistant message contains either non-empty text or one or more tool calls, never both and never neither.
-3. Tool-call IDs are non-empty and unique within the batch; tool names are non-empty; arguments contain valid JSON.
+3. Tool-call IDs are non-empty and unique across the execution; tool names are non-empty; arguments contain valid JSON.
 4. Tool calls returned separately from the assistant message are not permitted: the assistant message is the canonical representation stored in the transcript.
 5. Usage counts, when supplied, are nonnegative.
 6. Every tool-result message produced by the runtime has exactly one `ToolCallId` matching its originating assistant tool call.
@@ -228,19 +229,19 @@ Lifecycle invariants:
 
 1. Validate before calling external code: non-empty identifiers/instructions, positive model/tool limits, valid initial message roles, and known allowed tools.
 2. Copy caller-owned collections into immutable/read-only snapshots so they cannot change during a run.
-3. Check cancellation before every provider call and tool invocation, and pass the token to both.
+3. Check cancellation before and after every awaited provider/tool operation, before each invocation, and before successful completion; pass the token to both dependencies.
 4. Enforce the positive `MaxModelCalls` limit before every provider invocation.
 5. Enforce the strict model-response invariants above.
-6. Prevalidate the entire tool-call batch before invoking any tool: authorization, registration, non-empty and batch-unique call IDs, non-empty names, valid JSON arguments, and remaining tool-call budget. Any failure rejects the whole batch without side effects.
+6. Prevalidate the entire tool-call batch before invoking any tool: authorization, registration, non-empty and execution-unique call IDs, non-empty names, valid JSON arguments, and remaining tool-call budget. Any validation failure rejects the whole batch without side effects.
 7. Resolve tools by exact ordinal name and verify each is allow-listed, even if the registry contains it.
-8. Execute tools sequentially in model-provided order for deterministic behavior. Append one correlated result per successful call.
+8. Execute tools sequentially in model-provided order for deterministic behavior. Append one correlated result per successful call. Atomicity applies to validation only: if an invocation later fails, successful earlier tool side effects are not rolled back.
 9. Stop immediately on the first provider/tool failure. Do not synthesize a successful model-visible result from an infrastructure exception.
 10. A model final response ends the run. A response that keeps requesting tools eventually reaches a hard model-call or tool-call limit.
 
 ### Failure semantics
 
 - Input and configuration errors: standard argument exceptions before execution starts.
-- Runtime policy/contract errors: `AgentExecutionException` with stable `AgentExecutionErrorCode` values such as `ToolCallLimitExceeded`, `ToolNotAllowed`, `ToolNotFound`, and `InvalidModelResponse`.
+- Runtime policy/contract errors: `AgentExecutionException` with stable `AgentExecutionErrorCode` values such as `ToolCallLimitExceeded`, `ToolNotAllowed`, `ToolNotFound`, and `InvalidModelResponse`. Usage arithmetic is checked; overflow is classified as `InvalidModelResponse` with its cause preserved.
 - Provider/tool faults: `AgentProviderException` or `AgentToolException`, carrying execution/tool/call context and retaining the cause.
 - Cancellation: `OperationCanceledException`; never wrapped as a provider or tool failure when the run token requested cancellation.
 
@@ -258,13 +259,13 @@ This initial exception-first API keeps the happy path small. A discriminated res
 
 ## 8. Security posture
 
-Tool calling is capability-based: registration makes a tool available to the application, while an agent-specific allow-list grants use during a run. Both checks are required. Tool names use exact ordinal comparison, duplicate registrations fail at startup, arguments are treated as untrusted input, and raw secrets must not appear in descriptors, messages, exception text, or logs.
+Tool calling is capability-based: registration makes a tool available to the application, while an agent-specific allow-list grants use during a run. Both checks are required, and unknown allow-list entries fail before model invocation. Tool names use exact ordinal comparison, duplicate registrations fail at startup, and descriptor metadata is snapshotted at registration. Arguments are treated as untrusted input. Model-supplied tool names, call IDs, arguments, results, credentials, and raw secrets do not appear in exception messages or logs. Tool name and call ID remain available as explicitly documented structured exception properties.
 
 Milestone 1 does not claim sandboxed tool execution. Tools run in process with the application's identity, so application authors must register only trusted implementations. Approval workflows and out-of-process isolation require separate designs.
 
 ## 9. Observability approach
 
-Core logs lifecycle events using structured fields such as execution ID, agent ID, model ID, tool name, call ID, turn number, duration, and outcome. Message content and tool arguments/results are excluded by default because they may contain sensitive data.
+Core currently logs structured start metadata (execution, agent, and model identifiers) and successful completion counts. Message content, tool names/call IDs, and tool arguments/results are excluded. Richer lifecycle events, durations, and failure/cancellation outcomes remain part of the later observability design.
 
 OpenTelemetry is deferred to a dedicated milestone so activity names, attributes, metrics, and redaction policy can be designed against working runtime semantics. Stable IDs and lifecycle boundaries in milestone 1 make later instrumentation additive.
 
@@ -335,7 +336,7 @@ Acceptance criteria:
 - A no-tool provider response completes with the expected transcript and identifiers.
 - One and multiple tool requests execute sequentially and correlated results reach the next model turn.
 - Only allow-listed tools are described and invocable.
-- Unknown/disallowed tool calls fail with the expected error code and execute no tool.
+- Unknown allow-list entries fail before the model is invoked; disallowed or unavailable model-requested tools fail with the expected error code and execute no tool.
 - An over-limit batch fails before any tool in that batch executes.
 - Model-call and tool-call limits must be positive and are enforced before invocation.
 - Every tool batch is prevalidated for authorization, registration, duplicate call IDs, JSON validity, and remaining budget before any tool executes.

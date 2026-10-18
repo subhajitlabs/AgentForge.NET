@@ -1,15 +1,39 @@
 namespace AgentForge.Abstractions;
 
 /// <summary>Input for one model invocation.</summary>
-/// <param name="ExecutionId">The current execution identifier.</param>
-/// <param name="Model">The selected model.</param>
-/// <param name="Messages">The complete transcript snapshot.</param>
-/// <param name="AvailableTools">Tools permitted for this agent.</param>
-public sealed record ModelRequest(
-    ExecutionId ExecutionId,
-    ModelId Model,
-    IReadOnlyList<AgentMessage> Messages,
-    IReadOnlyList<ToolDescriptor> AvailableTools);
+public sealed record ModelRequest
+{
+    /// <summary>Creates an immutable model-request snapshot.</summary>
+    /// <param name="executionId">The current execution identifier.</param>
+    /// <param name="model">The selected model.</param>
+    /// <param name="messages">The complete transcript.</param>
+    /// <param name="availableTools">Tools permitted for this agent.</param>
+    public ModelRequest(
+        ExecutionId executionId,
+        ModelId model,
+        IEnumerable<AgentMessage> messages,
+        IEnumerable<ToolDescriptor> availableTools)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+        ArgumentNullException.ThrowIfNull(availableTools);
+        ExecutionId = executionId;
+        Model = model;
+        Messages = Array.AsReadOnly(messages.ToArray());
+        AvailableTools = Array.AsReadOnly(availableTools.ToArray());
+    }
+
+    /// <summary>Gets the current execution identifier.</summary>
+    public ExecutionId ExecutionId { get; }
+
+    /// <summary>Gets the selected model.</summary>
+    public ModelId Model { get; }
+
+    /// <summary>Gets the immutable transcript snapshot.</summary>
+    public IReadOnlyList<AgentMessage> Messages { get; }
+
+    /// <summary>Gets the immutable available-tool snapshot.</summary>
+    public IReadOnlyList<ToolDescriptor> AvailableTools { get; }
+}
 
 /// <summary>Output from one model invocation.</summary>
 /// <param name="Message">Exactly one assistant message.</param>
@@ -22,7 +46,7 @@ public sealed record ModelResponse(AssistantMessage Message, ModelUsage? Usage =
 public sealed record ModelUsage(long InputTokens, long OutputTokens)
 {
     /// <summary>Total input and output tokens.</summary>
-    public long TotalTokens => InputTokens + OutputTokens;
+    public long TotalTokens => checked(InputTokens + OutputTokens);
 }
 
 /// <summary>Completes one provider-neutral model turn.</summary>

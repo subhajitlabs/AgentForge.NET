@@ -19,8 +19,16 @@ public enum AgentExecutionErrorCode
 public sealed class AgentExecutionException : Exception
 {
     /// <summary>Creates an execution exception.</summary>
-    public AgentExecutionException(AgentExecutionErrorCode errorCode, ExecutionId executionId, string message)
-        : base(message)
+    /// <param name="errorCode">The stable failure code.</param>
+    /// <param name="executionId">The execution identifier.</param>
+    /// <param name="message">A safe diagnostic message.</param>
+    /// <param name="innerException">The underlying cause, when applicable.</param>
+    public AgentExecutionException(
+        AgentExecutionErrorCode errorCode,
+        ExecutionId executionId,
+        string message,
+        Exception? innerException = null)
+        : base(message, innerException)
     {
         ErrorCode = errorCode;
         ExecutionId = executionId;
@@ -64,9 +72,15 @@ public sealed class AgentToolException : Exception
     /// <summary>Gets the execution identifier.</summary>
     public ExecutionId ExecutionId { get; }
 
-    /// <summary>Gets the tool name.</summary>
+    /// <summary>
+    /// Gets the untrusted model-supplied tool name for structured diagnostics.
+    /// Do not log this value without an explicit redaction policy.
+    /// </summary>
     public string ToolName { get; }
 
-    /// <summary>Gets the tool-call identifier.</summary>
+    /// <summary>
+    /// Gets the untrusted model-supplied call identifier for structured diagnostics.
+    /// Do not log this value without an explicit redaction policy.
+    /// </summary>
     public string ToolCallId { get; }
 }

@@ -36,8 +36,8 @@ public sealed class AgentRuntime : IAgentRuntime
 
         var executionId = ExecutionId.New();
         var allowedTools = new HashSet<string>(request.Agent.AllowedTools, StringComparer.Ordinal);
-        ValidateAllowedToolNames(allowedTools);
-        var descriptors = _toolRegistry.Describe(allowedTools).ToArray();
+        ValidateAllowedTools(allowedTools);
+        var descriptors = _toolRegistry.Describe(allowedTools);
         var transcript = new List<AgentMessage>(request.Messages.Count + 4)
         {
             new SystemMessage(request.Agent.Instructions)
@@ -49,6 +49,7 @@ public sealed class AgentRuntime : IAgentRuntime
         long inputTokens = 0;
         long outputTokens = 0;
         var hasUsage = false;
+        var seenToolCallIds = new HashSet<string>(StringComparer.Ordinal);
 
         _logger.LogInformation(
             "Agent execution {ExecutionId} started for agent {AgentId} using model {ModelId}",
@@ -75,6 +76,7 @@ public sealed class AgentRuntime : IAgentRuntime
             try
             {
                 response = await _modelClient.CompleteAsync(modelRequest, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 modelCalls++;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -93,8 +95,20 @@ public sealed class AgentRuntime : IAgentRuntime
             if (response.Usage is not null)
             {
                 hasUsage = true;
-                inputTokens += response.Usage.InputTokens;
-                outputTokens += response.Usage.OutputTokens;
+                try
+                {
+                    inputTokens = checked(inputTokens + response.Usage.InputTokens);
+                    outputTokens = checked(outputTokens + response.Usage.OutputTokens);
+                    _ = checked(inputTokens + outputTokens);
+                }
+                catch (OverflowException exception)
+                {
+                    throw new AgentExecutionException(
+                        AgentExecutionErrorCode.InvalidModelResponse,
+                        executionId,
+                        "The model response contains usage values that exceed supported limits.",
+                        exception);
+                }
             }
 
             var validated = response.Message.ToolCalls.Count == 0
@@ -102,6 +116,7 @@ public sealed class AgentRuntime : IAgentRuntime
                 : PrevalidateToolBatch(
                     response.Message.ToolCalls,
                     allowedTools,
+                    seenToolCallIds,
                     request.Agent.Limits.MaxToolCalls - toolCalls,
                     executionId);
             var assistantMessage = CloneAssistantMessage(response.Message);
@@ -109,6 +124,7 @@ public sealed class AgentRuntime : IAgentRuntime
 
             if (assistantMessage.ToolCalls.Count == 0)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 _logger.LogInformation(
                     "Agent execution {ExecutionId} completed after {ModelCalls} model calls and {ToolCalls} tool calls",
                     executionId, modelCalls, toolCalls);
@@ -124,12 +140,13 @@ public sealed class AgentRuntime : IAgentRuntime
             foreach (var item in validated)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                ToolResult result;
+                ToolResult? result;
                 try
                 {
                     result = await item.Tool.InvokeAsync(
-                        new ToolInvocation(executionId, item.Call.Id, item.Call.Arguments.Clone()),
+                        new ToolInvocation(executionId, item.Call.Id, item.Call.Arguments),
                         cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -141,21 +158,21 @@ public sealed class AgentRuntime : IAgentRuntime
                         executionId,
                         item.Call.Name,
                         item.Call.Id,
-                        $"Tool '{item.Call.Name}' failed during execution '{executionId}'.",
+                        $"A tool failed during execution '{executionId}'.",
                         exception);
                 }
 
-                if (result.Value.ValueKind == JsonValueKind.Undefined)
+                if (result is null || result.Value.ValueKind == JsonValueKind.Undefined)
                 {
                     throw new AgentToolException(
                         executionId,
                         item.Call.Name,
                         item.Call.Id,
-                        $"Tool '{item.Call.Name}' returned an invalid JSON result.",
-                        new InvalidOperationException("A tool result cannot be an undefined JSON value."));
+                        $"A tool returned an invalid result during execution '{executionId}'.",
+                        new InvalidOperationException("A tool result must be non-null and contain a valid JSON value."));
                 }
 
-                transcript.Add(new ToolResultMessage(item.Call.Id, item.Call.Name, result.Value.Clone()));
+                transcript.Add(new ToolResultMessage(item.Call.Id, item.Call.Name, result.Value));
                 toolCalls++;
             }
         }
@@ -182,12 +199,14 @@ public sealed class AgentRuntime : IAgentRuntime
             throw new ArgumentException("Initial messages must contain one or more non-empty user messages.", nameof(request));
     }
 
-    private static void ValidateAllowedToolNames(IReadOnlySet<string> allowedTools)
+    private void ValidateAllowedTools(IReadOnlySet<string> allowedTools)
     {
         foreach (var name in allowedTools)
         {
             if (string.IsNullOrWhiteSpace(name))
                 throw new ArgumentException("Allowed tool names cannot be empty.", nameof(allowedTools));
+            if (!_toolRegistry.TryResolve(name, out _))
+                throw new ArgumentException("Every allowed tool must be registered.", nameof(allowedTools));
         }
     }
 
@@ -210,32 +229,35 @@ public sealed class AgentRuntime : IAgentRuntime
     private IReadOnlyList<ValidatedToolCall> PrevalidateToolBatch(
         IReadOnlyList<ToolCall> calls,
         IReadOnlySet<string> allowedTools,
+        HashSet<string> seenToolCallIds,
         int remainingBudget,
         ExecutionId executionId)
     {
         if (calls.Count > remainingBudget)
             throw PolicyError(AgentExecutionErrorCode.ToolCallLimitExceeded, executionId, "The requested tool batch exceeds the remaining tool-call budget.");
 
-        var callIds = new HashSet<string>(StringComparer.Ordinal);
+        var callIds = new HashSet<string>(seenToolCallIds, StringComparer.Ordinal);
         var validated = new List<ValidatedToolCall>(calls.Count);
         foreach (var call in calls)
         {
             if (call is null || string.IsNullOrWhiteSpace(call.Id) || string.IsNullOrWhiteSpace(call.Name) || call.Arguments.ValueKind == JsonValueKind.Undefined)
                 throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "Every tool call requires an ID, name, and valid JSON arguments.");
             if (!callIds.Add(call.Id))
-                throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, $"Duplicate tool-call ID '{call.Id}' was returned in one batch.");
+                throw PolicyError(AgentExecutionErrorCode.InvalidModelResponse, executionId, "The model response contains a duplicate tool-call identifier.");
             if (!allowedTools.Contains(call.Name))
-                throw PolicyError(AgentExecutionErrorCode.ToolNotAllowed, executionId, $"Tool '{call.Name}' is not allowed for this agent.");
+                throw PolicyError(AgentExecutionErrorCode.ToolNotAllowed, executionId, "The model requested a tool that is not allowed for this agent.");
             if (!_toolRegistry.TryResolve(call.Name, out var tool) || tool is null)
-                throw PolicyError(AgentExecutionErrorCode.ToolNotFound, executionId, $"Tool '{call.Name}' is not registered.");
+                throw PolicyError(AgentExecutionErrorCode.ToolNotFound, executionId, "The model requested a tool that is not registered.");
             validated.Add(new ValidatedToolCall(call, tool));
         }
+
+        seenToolCallIds.UnionWith(calls.Select(call => call.Id));
 
         return validated;
     }
 
     private static AssistantMessage CloneAssistantMessage(AssistantMessage message) =>
-        new(message.Text, message.ToolCalls.Select(call => new ToolCall(call.Id, call.Name, call.Arguments.Clone())).ToArray());
+        new(message.Text, message.ToolCalls.Select(call => new ToolCall(call.Id, call.Name, call.Arguments)));
 
     private static AgentExecutionException PolicyError(
         AgentExecutionErrorCode code,

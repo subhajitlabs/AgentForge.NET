@@ -19,27 +19,29 @@ This document describes the implementation currently present in this repository.
 - The model-call limit is enforced before each provider invocation.
 - The tool-call limit is enforced against the entire requested batch before any tool invocation.
 - Model and tool operations receive the caller's `CancellationToken`.
-- Cancellation requested through that token propagates as `OperationCanceledException` rather than being wrapped as a provider or tool failure.
+- Cancellation is checked before and after awaited provider/tool operations and before successful completion. Cancellation requested through that token propagates as `OperationCanceledException` rather than being wrapped as a provider or tool failure.
 - Successful runs return the terminal assistant message, a transcript snapshot, aggregate reported usage, and model/tool call counts.
 - Concurrent runs maintain independent execution IDs, transcripts, and counters.
 
 ### Tool execution and safety boundary
 
-- Tools implement `IAgentTool` and are registered in an immutable `AgentToolRegistry`.
+- Tools implement `IAgentTool` and are registered in an immutable `AgentToolRegistry`; descriptor metadata and schema JSON are snapshotted at registration.
 - Duplicate registered tool names and empty registered names are rejected when the registry is created.
 - Tool names use ordinal comparison.
 - Registration does not grant permission: an agent must also list the tool name in `AllowedTools`.
+- Unknown allow-list entries are rejected before the model is invoked.
 - Only registered tools included in the agent allow-list are described to the model.
 - Every model-requested tool batch is prevalidated before any tool in the batch runs.
 - Batch validation checks:
   - remaining tool-call budget;
   - non-empty call IDs and tool names;
-  - call-ID uniqueness within the batch;
+  - call-ID uniqueness across the entire execution;
   - defined JSON arguments;
   - agent authorization;
   - tool registration.
 - Any invalid call rejects the entire batch without partial tool execution.
 - Valid calls execute sequentially in model-provided order.
+- Batch validation is atomic, but tool invocation is not transactional: if a later tool fails, successful earlier tool side effects are not rolled back.
 - Each result is appended as a `ToolResultMessage` carrying the originating call ID and tool name.
 - Tools run in process with the application's identity. No sandbox or approval workflow is implemented.
 
@@ -57,7 +59,9 @@ This document describes the implementation currently present in this repository.
 - Negative provider usage values are rejected.
 - Assistant tool-call messages remain in the transcript; tool results preserve explicit correlation rather than replacing or reconstructing the assistant message.
 - Tool arguments, schemas, and results use `JsonElement` at the provider-neutral boundary.
-- `ModelUsage` aggregates nonnegative provider-reported input and output token counts across calls.
+- Public JSON-bearing contracts clone values and do not depend on the originating `JsonDocument` lifetime.
+- Ordered public collections are non-mutable snapshots, and agent tool allow-lists are frozen snapshots.
+- `ModelUsage` aggregates nonnegative provider-reported input and output token counts across calls using checked arithmetic.
 
 ### Failure behavior
 
@@ -71,7 +75,8 @@ This document describes the implementation currently present in this repository.
   - `InvalidModelResponse`.
 - Provider failures are wrapped in `AgentProviderException` with the execution ID and original exception preserved as `InnerException`.
 - Tool failures are wrapped in `AgentToolException` with execution ID, tool name, call ID, and original exception preserved.
-- An undefined JSON tool result is reported as an `AgentToolException` after the tool invocation.
+- Null, undefined, or disposed JSON tool results are reported as `AgentToolException` after invocation.
+- Model-controlled tool names, call IDs, arguments, and results are excluded from exception messages; tool name and call ID remain available as structured exception properties.
 
 ### Hosting, fake provider, and sample
 
@@ -88,8 +93,8 @@ This document describes the implementation currently present in this repository.
 - `AgentDefinition` is declarative data containing identity, instructions, model selection, an explicit tool allow-list, and hard limits.
 - IDs are distinct value types: `AgentId`, `ModelId`, and `ExecutionId`.
 - Public asynchronous operations use the `Async` suffix and accept a trailing optional `CancellationToken`.
-- Public messages and requests use records and read-only collection contracts.
-- The runtime copies the allow-list and transcript containers used during execution; messages themselves are immutable records.
+- Public messages and requests use immutable records with owned JSON values and non-mutable collection snapshots.
+- `AgentRunRequest` contains only the agent definition and initial messages; the unused `ConversationId` placeholder was removed during Phase 1 hardening.
 - Normal completion returns `AgentRunResult`; invalid configuration, policy violations, dependency failures, and cancellation use exceptions.
 - Provider adapters implement one-turn `IAgentModelClient.CompleteAsync` semantics. The model client does not execute tools.
 - Tool implementations expose metadata separately from invocation through `ToolDescriptor` and `InvokeAsync`.
@@ -115,7 +120,7 @@ Result:
 Release build:
 
 ```powershell
-dotnet build AgentForge.slnx --configuration Release --no-restore
+dotnet build AgentForge.slnx --configuration Release
 ```
 
 Result:
@@ -129,22 +134,22 @@ Build succeeded.
 Test run:
 
 ```powershell
-dotnet test AgentForge.slnx --configuration Release --no-build --no-restore
+dotnet test AgentForge.slnx --configuration Release
 ```
 
 Result:
 
 ```text
-Passed!  - Failed: 0, Passed: 23, Skipped: 0, Total: 23
+Passed!  - Failed: 0, Passed: 42, Skipped: 0, Total: 42
 Target: .NETCoreApp,Version=v10.0
 ```
 
-The 23 tests cover terminal completion, transcript composition, usage aggregation, tool-call/result correlation, deterministic tool ordering, positive limit validation, both invocation limits, atomic invalid-batch rejection, cancellation before and during asynchronous boundaries, provider/tool failure propagation, invalid responses, concurrent-run isolation, and DI composition.
+The 42 tests cover terminal completion, immutable public snapshots, nested JSON ownership, transcript composition, usage aggregation and overflow, tool-call/result correlation, deterministic tool ordering, positive and cumulative limits, atomic invalid-batch rejection, execution-wide call-ID uniqueness, cancellation before/during/after asynchronous boundaries, provider/tool failure propagation, malformed/disposed provider and tool JSON, null tool results, registration and descriptor snapshots, descriptor filtering, logging redaction, tool-enabled concurrency isolation, and DI composition.
 
 Console sample:
 
 ```powershell
-dotnet run --project samples\AgentForge.Samples.Console\AgentForge.Samples.Console.csproj --configuration Release --no-build --no-restore
+dotnet run --project samples\AgentForge.Samples.Console\AgentForge.Samples.Console.csproj --configuration Release
 ```
 
 Result:
@@ -181,13 +186,12 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 ## Known limitations
 
 - Initial `AgentRunRequest.Messages` currently accepts one or more non-empty `UserMessage` instances only. Supplying prior assistant/tool history is rejected even though the internal message model can represent it.
-- Tool argument validation only guarantees a defined `JsonElement`; Core does not validate arguments against `ToolDescriptor.ParametersSchema`.
+- Tool argument validation guarantees an owned, defined `JsonElement`; Core does not validate arguments against `ToolDescriptor.ParametersSchema`.
 - Tool descriptors and implementations are trusted application configuration. Tool code can access all permissions available to the host process.
 - Tool calls execute sequentially. There is no opt-in declaration for read-only or concurrency-safe tools.
 - Failures stop execution immediately. No recovery state or partial transcript is returned to the caller.
-- Call-ID uniqueness is enforced within each model response batch, not globally across an entire execution.
 - The scripted model client is a deterministic development/test component and does not demonstrate provider protocol compatibility.
-- Metadata-only structured logging hooks exist, but there is no dedicated telemetry package or verified logging assertion suite.
+- Metadata-only structured logging and redaction are regression tested, but there is no dedicated telemetry package or configurable content-capture policy.
 - The repository-local `.dotnet-home` directory is an ignored CLI artifact and is not product source.
 
 ## Outstanding issues
