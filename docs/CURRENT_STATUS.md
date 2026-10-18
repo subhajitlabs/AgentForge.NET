@@ -1,11 +1,24 @@
 # AgentForge.NET Current Status
 
 Status date: 2026-10-18  
-Current milestone: Phase 2 Increment 5 (OpenAI Responses Provider) complete; later increments not authorized
+Current milestone: Phase 2 Increment 6 (Microsoft.Extensions.AI Interoperability) complete; later increments not authorized
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
 This document describes the implementation currently present in this repository. Items under **Verified** were exercised locally using the commands and environment recorded below. Design goals and future work are not presented as implemented behavior.
+
+## Verified Phase 2 Increment 6 implementation
+
+- `AgentForge.Adapters.MicrosoftExtensionsAI` wraps a caller-owned `Microsoft.Extensions.AI.IChatClient` as both `IAgentModelClient` and `IStreamingAgentModelClient`. Core and Abstractions have no Microsoft.Extensions.AI dependency.
+- The adapter pins stable `Microsoft.Extensions.AI.Abstractions` 10.11.0. This is the current abstractions-only package for libraries implementing or consuming `IChatClient`; its .NET 10 asset has no additional package dependencies.
+- Implementation was verified against the 10.11.0 public `IChatClient.GetResponseAsync` and `GetStreamingResponseAsync` signatures; `ChatMessage`, `ChatRole`, `TextContent`, `FunctionCallContent`, `FunctionResultContent`, `ChatOptions`, declaration-only `AIFunctionFactory.CreateDeclaration`, `ChatResponse`, `ChatResponseUpdate`, `ChatFinishReason`, `UsageDetails`, `UsageContent`, and `ChatResponseExtensions.ToChatResponse` surfaces.
+- Every turn converts the complete transcript in order. System/user/assistant text, assistant function calls, tool-role function results, call IDs, names, JSON arguments/results, model ID, and only `ModelRequest.AvailableTools` are preserved without provider-managed conversation state.
+- Tool definitions are non-invocable `AIFunctionDeclaration` instances. The adapter never registers AgentForge delegates with the external client and does not authorize or execute tools.
+- Buffered responses require exactly one assistant message and map `Stop`, `ToolCalls`, `Length`, and `ContentFilter` explicitly. Missing or extensible unknown finish reasons map to `ModelFinishReason.Unknown`; contradictory shapes, unsupported content, malformed calls, duplicate IDs, and invalid usage fail as sanitized protocol errors.
+- Streaming forwards only non-empty text fragments and privately accumulates updates. Exactly one finish-bearing update is required; usage-only updates may follow it. The adapter consumes through clean EOF, reconstructs with the package's standard `ToChatResponse` contract, validates parity, and emits one authoritative completion. Missing/duplicate/conflicting terminal information and post-terminal model content fail explicitly.
+- Caller cancellation is propagated before calls, during buffered awaits and streaming enumeration, and before completion. `NotSupportedException` maps to `CapabilityNotSupported`; other safe HTTP/timeout/transport evidence maps to the existing provider-neutral taxonomy with fixed messages and no retries.
+- Minimal singleton DI registration accepts an existing client or factory, refuses to replace an existing AgentForge model-client registration, and leaves `IChatClient` lifetime/disposal ownership with the caller.
+- No Increment 7 facade, provider routing, automatic tool execution, retry, persistence, live verification, or Microsoft.Extensions.AI dependency in foundational packages was added.
 
 ## Verified Phase 2 Increment 5 implementation
 
@@ -18,7 +31,7 @@ This document describes the implementation currently present in this repository.
 - `ModelProviderException` and `ModelProviderErrorKind` provide sanitized provider-neutral classification, transient/retry metadata, and conservatively validated provider request IDs. AgentForge-owned messages never copy provider bodies/messages; the SDK exception remains the potentially sensitive inner cause.
 - `OpenAIProviderOptions`, `OpenAIAgentModelClient`, and minimal DI registration are the only provider public surfaces. Caller-owned `ResponsesClient` construction is supported with an explicit ownership boundary for endpoint and retry policy.
 - The Responses API remains marked experimental by SDK 2.14.0. `OPENAI001` is suppressed only in the provider project, with an upgrade-review comment; tests acknowledge it locally per source file.
-- No live OpenAI call, Microsoft.Extensions.AI adapter, beginner facade, provider-managed conversation, retry/fallback, hosted tool, or Increment 6 capability was added.
+- No live OpenAI call, beginner facade, provider-managed conversation, retry/fallback, hosted tool, or later-increment capability was added.
 
 ## Verified Phase 2 Increment 4 implementation
 
@@ -211,11 +224,11 @@ dotnet test AgentForge.slnx --configuration Release --no-build
 Result:
 
 ```text
-Passed!  - Failed: 0, Passed: 157, Skipped: 0, Total: 157
+Passed!  - Failed: 0, Passed: 180, Skipped: 0, Total: 180
 Target: .NETCoreApp,Version=v10.0
 ```
 
-The 157 tests include 95 Core/runtime tests, 30 typed-tool tests, and 32 OpenAI provider tests. Provider coverage uses the SDK's public transport seam with synthetic JSON/SSE and covers stateless request serialization, transcript/tool correlation, buffered finish states, usage, HTTP/provider classification, request-ID and retry metadata sanitization, zero hidden retries, buffered/streaming transport cancellation, private streamed function arguments, byte-fragmented SSE, terminal protocol failures, redaction, DI, and concurrent isolation.
+The 180 tests include 95 Core/runtime tests, 30 typed-tool tests, 32 OpenAI provider tests, and 23 Microsoft.Extensions.AI adapter tests. Adapter coverage uses scripted in-memory `IChatClient` implementations and covers transcript/schema/correlation mapping, declaration-only tools, buffered and streaming finish semantics, usage, malformed/mixed content and function arguments, JSON ownership, redaction, cancellation, disposal, capability failure, concurrency, DI conflicts, and absence of retries.
 
 Console sample:
 
@@ -230,14 +243,13 @@ Result:
 Model calls: 2; Tool calls: 1
 ```
 
-These results verify the Phase 1 implementation and Phase 2 Increments 1-5 on the listed SDK and local Windows environment. Provider tests are deterministic and credential-free; they do not constitute live OpenAI verification or verify behavior on other operating systems, SDK versions, external providers, or distributed infrastructure.
+These results verify the Phase 1 implementation and Phase 2 Increments 1-6 on the listed SDK and local Windows environment. Provider and adapter tests are deterministic and credential-free; they do not constitute live verification or verify behavior on other operating systems, SDK versions, external providers, or distributed infrastructure.
 
 ## Unimplemented features
 
 The following are intentionally not implemented and have not been verified:
 
 - Other networked LLM providers and live OpenAI verification.
-- Microsoft.Extensions.AI adapters.
 - Streaming tool output.
 - Multi-agent orchestration, handoffs, supervisors, or teams.
 - Graph/DAG workflows, branches, fan-out, or fan-in.
@@ -268,6 +280,9 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 - The OpenAI Responses SDK surface is experimental in pinned version 2.14.0 and must be contract-reviewed before upgrade.
 - Caller-owned `ResponsesClient` instances cannot be audited by AgentForge for endpoint security or disabled retry policy.
 - Typed streaming does not expose a convenient raw response header surface, so streaming provider request IDs remain unavailable.
+- The abstractions-only Microsoft.Extensions.AI surface cannot reliably identify a middleware pipeline that invokes tools automatically. Such wrapped clients are unsupported; supply a raw client that returns tool calls to AgentForge.
+- Microsoft.Extensions.AI has no standard refusal finish reason in 10.11.0. Extensible unrecognized finish reasons map conservatively to `Unknown` rather than being guessed as refusals.
+- The Microsoft.Extensions.AI adapter owns neither lifetime nor disposal of its caller-supplied `IChatClient`.
 - Metadata-only structured logging and redaction are regression tested, but there is no dedicated telemetry package or configurable content-capture policy.
 - The repository-local `.dotnet-home` directory is an ignored CLI artifact and is not product source.
 
@@ -284,4 +299,4 @@ None of these outstanding issues invalidate the verified Phase 1 acceptance resu
 
 ## Next recommended task
 
-Stop after Increment 5. Perform architectural review of the OpenAI adapter, especially the experimental SDK pin, terminal streaming validation, error redaction, and caller-owned client boundary. Increment 6 must not begin without explicit approval.
+Stop after Increment 6. Perform architectural review of the interoperability adapter, especially stream terminal semantics, declaration-only tool ownership, and the unsupported auto-invoking middleware boundary. Increment 7 must not begin without explicit approval.
