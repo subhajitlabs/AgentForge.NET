@@ -23,5 +23,7 @@
     <Project Path="tests/AgentForge.Adapters.MicrosoftExtensionsAI.Tests/AgentForge.Adapters.MicrosoftExtensionsAI.Tests.csproj" />
     <Project Path="tests/AgentForge.Tools.Tests/AgentForge.Tools.Tests.csproj" />
     <Project Path="tests/AgentForge.Providers.OpenAI.Tests/AgentForge.Providers.OpenAI.Tests.csproj" />
+    <Project Path="tests/AgentForge.LiveVerification/AgentForge.LiveVerification.csproj" />
+    <Project Path="tests/AgentForge.LiveVerification.Tests/AgentForge.LiveVerification.Tests.csproj" />
   </Folder>
 </Solution>

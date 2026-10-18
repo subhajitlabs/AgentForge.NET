@@ -76,6 +76,23 @@ A non-streaming provider fails with `CapabilityNotSupported`; AgentForge never s
 
 For OpenAI, set `OPENAI_API_KEY` and the deployment-specific `OPENAI_MODEL`; never commit credentials. Register `AddOpenAIModelClient(...)` before `AddAgentForge()`. The opt-in OpenAI sample does not run during default verification and no live provider call is claimed.
 
+### Opt-in OpenAI live verification
+
+The dedicated live-verification executable exercises buffered text, streaming text, a typed calculator-tool round trip, and caller cancellation through keyed `IAgent` instances. It is not a test project and cannot be discovered by `dotnet test`. All four gates must be present before the provider is constructed: `--live`, `AGENTFORGE_RUN_LIVE_TESTS=true`, a nonempty `OPENAI_API_KEY`, and a nonempty `OPENAI_MODEL`.
+
+```powershell
+$env:AGENTFORGE_RUN_LIVE_TESTS = 'true'
+$env:OPENAI_API_KEY = '<your-key>'
+$env:OPENAI_MODEL = '<your-model>'
+dotnet run --project tests/AgentForge.LiveVerification/AgentForge.LiveVerification.csproj --configuration Release -- --live
+```
+
+Without every gate, the executable exits before provider construction or HTTP access and never prints environment-variable values. Four scenarios run sequentially. Text and cancellation scenarios allow one model call, the tool scenario allows two, every scenario permits at most one tool call, and each has a 30-second timeout. There are no retries. The current public provider adapter does not expose maximum output tokens, so that additional bound cannot be enforced. Live requests can incur API charges; choosing a small suitable `OPENAI_MODEL` reduces usage but is not a guaranteed cost ceiling.
+
+Reports contain only scenario status, call counts, optional token usage, and fixed error classifications. `Pass` means observable checks held; `Fail` means a request or check failed; `Inconclusive` means the probabilistic model did not select the calculator tool; `Skipped` is reserved for a scenario that cannot run. Failed or inconclusive scenarios return nonzero, and no scenario is retried. Credentials, headers, raw requests/responses, tool arguments, provider exception messages, and inner exceptions are not printed or persisted.
+
+Live verification has been implemented but **has not been executed**. Offline tests validate safeguards and deterministic behavior, not live API compatibility. Cancellation uses an already-cancelled caller token; it proves local propagation and absence of successful completion, not cancellation of remote work already accepted by a provider.
+
 For Microsoft.Extensions.AI, pass a raw compatible `IChatClient` to `AddMicrosoftExtensionsAIModelClient`. Clients wrapped in automatic tool-invocation middleware are unsupported because AgentForge must remain the sole tool authorization and execution boundary.
 
 Run the deterministic calculator sample with:

@@ -1,11 +1,21 @@
 # AgentForge.NET Current Status
 
 Status date: 2026-10-18  
-Current milestone: Phase 2 Increment 7 (Ergonomic Agent API and Samples) complete; Increment 8 not authorized
+Current milestone: Phase 2 Increment 8 (Opt-in Live Verification) implemented; live execution not performed
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
 This document describes the implementation currently present in this repository. Items under **Verified** were exercised locally using the commands and environment recorded below. Design goals and future work are not presented as implemented behavior.
+
+## Implemented Phase 2 Increment 8
+
+- `tests/AgentForge.LiveVerification` is a dedicated executable rather than a test project. It reaches the official OpenAI adapter only through keyed public `IAgent` facades and the existing buffered/streaming runtime and typed-tool engine.
+- Provider construction requires all four gates: `--live`, `AGENTFORGE_RUN_LIVE_TESTS=true`, nonempty `OPENAI_API_KEY`, and nonempty `OPENAI_MODEL`. A closed gate exits before construction or HTTP access without printing values.
+- Four scenarios run sequentially: buffered text, streaming text with exactly one terminal event, a typed `calculator.add` round trip, and deterministic pre-cancelled caller-token propagation.
+- Text/cancellation scenarios allow one model call, the tool scenario allows two, every scenario allows at most one tool call, and each has a 30-second timeout. There are no automatic retries. The current public provider configuration cannot set maximum output tokens; this is documented rather than claimed as enforced.
+- Output is limited to safe names/statuses, call counts, optional usage, and fixed classifications. Tool non-selection is inconclusive and is not retried; fail or inconclusive returns nonzero.
+- `tests/AgentForge.LiveVerification.Tests` provides offline guard coverage for the gates, early exit, whitespace configuration, fixed limits, redacted reporting, and exclusion of the executable from test discovery.
+- Live verification has **not been executed**. Offline build/test evidence does not prove live OpenAI compatibility.
 
 ## Verified Phase 2 Increment 7 implementation
 
@@ -234,11 +244,11 @@ dotnet test AgentForge.slnx --configuration Release --no-build
 Result:
 
 ```text
-Passed!  - Failed: 0, Passed: 189, Skipped: 0, Total: 189
+Passed!  - Failed: 0, Passed: 201, Skipped: 0, Total: 201
 Target: .NETCoreApp,Version=v10.0
 ```
 
-The 189 tests include 104 Core/runtime/Hosting tests, 30 typed-tool tests, 32 OpenAI provider tests, and 23 Microsoft.Extensions.AI adapter tests. Hosting coverage includes buffered and streaming facade delegation, fresh execution state, cancellation, keyed isolation, duplicate/missing keys, unknown tools, multiple-client rejection, and unsupported streaming. Adapter coverage uses scripted in-memory clients and remains network-free.
+The 201 tests include 104 Core/runtime/Hosting tests, 30 typed-tool tests, 32 OpenAI provider tests, 23 Microsoft.Extensions.AI adapter tests, and 12 live-verification guard tests. Hosting coverage includes buffered and streaming facade delegation, fresh execution state, cancellation, keyed isolation, duplicate/missing keys, unknown tools, multiple-client rejection, and unsupported streaming. Adapter and guard coverage remains deterministic, credential-free, and network-free.
 
 Console sample:
 
@@ -253,7 +263,7 @@ Result:
 Model calls: 2; Tool calls: 1
 ```
 
-These results verify the Phase 1 implementation and Phase 2 Increments 1-6 on the listed SDK and local Windows environment. Provider and adapter tests are deterministic and credential-free; they do not constitute live verification or verify behavior on other operating systems, SDK versions, external providers, or distributed infrastructure.
+These results verify the offline implementation through Phase 2 Increment 8 on the listed SDK and local Windows environment. Provider, adapter, and live-guard tests are deterministic and credential-free; they do not constitute execution of live verification or prove behavior on other operating systems, SDK versions, external providers, or distributed infrastructure.
 
 ## Unimplemented features
 
@@ -303,10 +313,10 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 - Provider capability negotiation beyond the implemented `IStreamingAgentModelClient` interface check is not implemented.
 - Usage normalization across providers is not defined.
 - Content logging/redaction remains deny-by-default but has no configurable policy model.
-- Live integration tests remain a separately authorized Increment 8 concern; Increment 5 verification is offline.
+- Live verification is separately opt-in and has not been executed; its deterministic guard coverage is offline only.
 
 None of these outstanding issues invalidate the verified Phase 1 acceptance results, but they must not be described as implemented capabilities.
 
 ## Next recommended task
 
-Stop after Increment 7. Perform architectural review of the keyed facade, first-resolution validation timing, model-client cardinality rule, and sample boundaries. Increment 8 live verification must not begin without explicit approval.
+Stop after Increment 8. Perform the final Phase 2 architecture and release-readiness review. Do not begin Phase 3 without explicit approval.
