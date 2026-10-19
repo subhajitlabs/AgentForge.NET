@@ -1,0 +1,153 @@
+name: Publish approved NuGet artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub prerelease tag containing the approved artifacts
+        required: true
+        default: v0.2.0-preview.1
+        type: string
+      confirm_release:
+        description: Enter PUBLISH v0.2.0-preview.1 to authorize publication
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: inputs.release_tag == 'v0.2.0-preview.1' && inputs.confirm_release == 'PUBLISH v0.2.0-preview.1'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    environment: release
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: true
+      NUGET_SOURCE: https://api.nuget.org/v3/index.json
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      EXPECTED_COMMIT: 92ebd9c36e159945199f81e9bf24e21f7cded1d8
+      PACKAGE_VERSION: 0.2.0-preview.1
+
+    steps:
+      - name: Download approved GitHub release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path artifacts | Out-Null
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir artifacts --pattern '*.nupkg' --pattern '*.snupkg'
+
+      - name: Verify release target, artifact set, and SHA-256 hashes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if (-not $release.prerelease -or $release.draft) {
+            throw "The GitHub release must be a published prerelease."
+          }
+
+          $tagCommit = gh api "repos/$env:GITHUB_REPOSITORY/commits/$env:RELEASE_TAG" --jq '.sha'
+          if ($tagCommit -ne $env:EXPECTED_COMMIT) {
+            throw "Tag $env:RELEASE_TAG targets $tagCommit instead of $env:EXPECTED_COMMIT."
+          }
+
+          $expected = [ordered]@{
+            'AgentForge.Abstractions.0.2.0-preview.1.nupkg' = '3ae22b4b8782b8d8ee90ce113230056161a3e1f8ac52476aa1001425c917de06'
+            'AgentForge.Abstractions.0.2.0-preview.1.snupkg' = '160ab63a4169c2f595fd2d95cf84db86296ccc964a34b0c8a930c1516010a50d'
+            'AgentForge.Adapters.MicrosoftExtensionsAI.0.2.0-preview.1.nupkg' = 'b129c71d5c345403c1b6081aee84554b57453c30b3721b96e91370356469eb6b'
+            'AgentForge.Adapters.MicrosoftExtensionsAI.0.2.0-preview.1.snupkg' = 'ce9f850a344cad691f5001145a1c7774dd489c52cb07715ea296aaea679db9a8'
+            'AgentForge.Core.0.2.0-preview.1.nupkg' = '9ebb5a4ce228a3dfafabde69e2b771733da291ad47711c6c6de5326ef2a3a6ee'
+            'AgentForge.Core.0.2.0-preview.1.snupkg' = 'a9c2466cff705ca20cac881edbb027be439a48bad2d18cc0aec2690cd9d90489'
+            'AgentForge.Hosting.0.2.0-preview.1.nupkg' = '0604fe1f657972f7de702d2e9c18504c35ad71f46d15d8ffa0cc772369d1706b'
+            'AgentForge.Hosting.0.2.0-preview.1.snupkg' = '7d4a0934de54b75585787ef247d6288bc6c37329c94de2ed5fa0d049587a339b'
+            'AgentForge.Providers.OpenAI.0.2.0-preview.1.nupkg' = '33a73f515fdfbba238c0b621d6f9c777fa145b44d596f9e330d2896c371fb461'
+            'AgentForge.Providers.OpenAI.0.2.0-preview.1.snupkg' = 'a2e843f4aed085aee61c7b77a93688e79853381a0dbe7bb871f4e490b2c0bcc8'
+            'AgentForge.Tools.0.2.0-preview.1.nupkg' = 'c9cdb95b9642e710c02ad1b95a5f743db995d6b7d80c6ac243f39038cdffacc2'
+            'AgentForge.Tools.0.2.0-preview.1.snupkg' = '33a9b23622c64abaae089eb17352041af641ca36cfb35a889ec44299dc4e2b3f'
+          }
+
+          $actualFiles = @(Get-ChildItem -LiteralPath artifacts -File | Sort-Object Name)
+          $actualNames = @($actualFiles.Name)
+          $expectedNames = @($expected.Keys | Sort-Object)
+          if (Compare-Object $expectedNames $actualNames) {
+            throw 'The GitHub release asset set is not the exact approved twelve-file set.'
+          }
+
+          foreach ($file in $actualFiles) {
+            $actualHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expected[$file.Name]) {
+              throw "SHA-256 mismatch for $($file.Name)."
+            }
+          }
+
+      - name: Check exact NuGet version collisions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageIds = @(
+            'AgentForge.Abstractions',
+            'AgentForge.Core',
+            'AgentForge.Tools',
+            'AgentForge.Providers.OpenAI',
+            'AgentForge.Adapters.MicrosoftExtensionsAI',
+            'AgentForge.Hosting'
+          )
+
+          foreach ($packageId in $packageIds) {
+            $lowerId = $packageId.ToLowerInvariant()
+            $indexUri = "https://api.nuget.org/v3-flatcontainer/$lowerId/index.json"
+            try {
+              $index = Invoke-RestMethod -Uri $indexUri -Method Get
+              if ($index.versions -contains $env:PACKAGE_VERSION) {
+                throw "NuGet collision: $packageId $env:PACKAGE_VERSION already exists."
+              }
+            }
+            catch {
+              if ($_.Exception.Response.StatusCode.value__ -eq 404) {
+                continue
+              }
+
+              throw
+            }
+          }
+
+      - name: Acquire short-lived NuGet credential
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: subhajitlabs
+
+      - name: Publish packages and symbols in dependency order
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packages = @(
+            'AgentForge.Abstractions',
+            'AgentForge.Core',
+            'AgentForge.Tools',
+            'AgentForge.Providers.OpenAI',
+            'AgentForge.Adapters.MicrosoftExtensionsAI',
+            'AgentForge.Hosting'
+          )
+
+          foreach ($packageId in $packages) {
+            $packagePath = Join-Path artifacts "$packageId.$env:PACKAGE_VERSION.nupkg"
+            dotnet nuget push $packagePath `
+              --source $env:NUGET_SOURCE `
+              --api-key $env:NUGET_API_KEY `
+              --symbol-source $env:NUGET_SOURCE `
+              --symbol-api-key $env:NUGET_API_KEY `
+              --timeout 300
+            if ($LASTEXITCODE -ne 0) {
+              throw "NuGet publication failed or had an ambiguous outcome for $packageId."
+            }
+          }
