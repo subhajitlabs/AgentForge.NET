@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+      AGENTFORGE_RUN_LIVE_TESTS: "false"
+      OPENAI_API_KEY: ""
+      OPENAI_MODEL: ""
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install repository-pinned .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      - name: Confirm SDK
+        run: dotnet --version
+
+      - name: Restore locked dependencies
+        run: dotnet restore AgentForge.slnx --locked-mode
+
+      - name: Build Release with warnings as errors
+        run: dotnet build AgentForge.slnx --configuration Release --no-restore
+
+      - name: Run deterministic offline tests
+        run: dotnet test AgentForge.slnx --configuration Release --no-build --no-restore
+
+      - name: Pack exact release artifacts
+        run: dotnet pack AgentForge.slnx --configuration Release --no-build --no-restore --output artifacts/packages
+
+      - name: Verify packages, symbols, metadata, and source revision
+        shell: pwsh
+        run: ./eng/Verify-Packages.ps1 -PackageDirectory ./artifacts/packages -ExpectedRepositoryCommit $env:GITHUB_SHA
+
+      - name: Upload verified packages for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentForge.NET-0.2.0-preview.1-${{ github.sha }}
+          path: artifacts/packages/*.*nupkg
+          if-no-files-found: error
+          retention-days: 7

@@ -8,3 +8,4 @@ TestResults/
 .dotnet/
 .dotnet-home/
 dotnet-install.ps1
+artifacts/

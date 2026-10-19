@@ -1,11 +1,20 @@
 # AgentForge.NET Current Status
 
-Status date: 2026-10-18  
-Current milestone: Phase 2 Increment 8 implemented; release-blocker remediation in progress
+Status date: 2026-10-19
+Current milestone: Phase 2 Increment 8 implemented; Gate A release preparation locally verified
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
 This document describes the implementation currently present in this repository. Items under **Verified** were exercised locally using the commands and environment recorded below. Design goals and future work are not presented as implemented behavior.
+
+## Release readiness status
+
+- **Implemented runtime:** Phase 2 Increments 1 through 8 remain implemented as described below. Gate A adds no runtime feature and changes no public API.
+- **Locally verified package readiness:** The repository packs exactly six `0.2.0-preview.1` libraries and six matching symbol packages. Metadata, internal dependency versions, README files, XML documentation, symbol payloads, and repository revision are checked by `eng/Verify-Packages.ps1`. Samples, tests, and live-verification executables are non-packable.
+- **User-reported live verification:** The four post-fix `gpt-4o-mini` outcomes below were supplied by the user. Gate A made no live OpenAI call and does not independently validate them.
+- **Publication state:** The artifacts are local and unpublished. No tag, GitHub release, NuGet upload, or public indexing/download verification has occurred.
+- **CI state:** `.github/workflows/ci.yml` defines locked restore, Release build, deterministic offline tests, exact packing, and package verification on the pinned SDK. It has been reviewed locally but cannot be called successful until a GitHub-hosted run completes.
+- **Release procedure:** `docs/PHASE2_RELEASE_CHECKLIST.md` is the staged checklist. Founder approval is required before any action outside pre-publication validation.
 
 ## Implemented Phase 2 Increment 8
 
@@ -208,7 +217,7 @@ All Phase 1 guarantees described below remain verified after the Increment 4 typ
 
 ## Verification evidence
 
-The following results were freshly verified on 2026-10-18. The CLI home was redirected to the ignored repository-local `.dotnet-home` directory, first-time experience was disabled, and telemetry was opted out for the command process.
+The following results were freshly verified on 2026-10-19 from baseline commit `58c9837d7364616948bb803b4d31814d5aeb5e43` plus the uncommitted Gate A release-preparation changes. No live provider call was made.
 
 SDK check:
 
@@ -236,6 +245,14 @@ Build succeeded.
     0 Error(s)
 ```
 
+Locked restore:
+
+```powershell
+dotnet restore AgentForge.slnx --locked-mode
+```
+
+Result: all 16 solution projects restored successfully from committed `packages.lock.json` files.
+
 Test run:
 
 ```powershell
@@ -245,7 +262,7 @@ dotnet test AgentForge.slnx --configuration Release --no-build
 Result:
 
 ```text
-Passed!  - Failed: 0, Passed: 201, Skipped: 0, Total: 201
+Passed!  - Failed: 0, Passed: 203, Skipped: 0, Total: 203
 Target: .NETCoreApp,Version=v10.0
 ```
 
@@ -266,6 +283,15 @@ Model calls: 2; Tool calls: 1
 
 These results verify the offline implementation through Phase 2 Increment 8 on the listed SDK and local Windows environment. Provider, adapter, and live-guard tests are deterministic and credential-free; they do not constitute execution of live verification or prove behavior on other operating systems, SDK versions, external providers, or distributed infrastructure.
 
+Release packing:
+
+```powershell
+dotnet pack AgentForge.slnx --configuration Release --no-build --no-restore --output artifacts/gatea-packages
+./eng/Verify-Packages.ps1 -PackageDirectory artifacts/gatea-packages -ExpectedRepositoryCommit 58c9837d7364616948bb803b4d31814d5aeb5e43
+```
+
+Result: exactly six library packages and six matching symbol packages at `0.2.0-preview.1`; package IDs, metadata, internal dependency versions, README files, XML documentation, portable PDB payloads, and source revision passed verification. No sample or test package was emitted. The package artifacts remain local and ignored.
+
 ## Unimplemented features
 
 The following are intentionally not implemented and have not been verified:
@@ -283,7 +309,7 @@ The following are intentionally not implemented and have not been verified:
 - Parallel tool execution.
 - Tool approval workflows, process isolation, or sandboxing.
 - Multimodal message content.
-- NuGet packaging, API compatibility baselines, signing, CI, or release automation.
+- NuGet publication, package signing, or automated public API compatibility enforcement.
 
 The broader product vision and later phases in `docs/architecture.md` remain plans, not verified capabilities.
 
@@ -309,8 +335,8 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 
 ## Outstanding issues
 
-- There is no CI workflow to reproduce the local .NET 10 build and test evidence.
-- Public API compatibility is not yet tracked with an API baseline tool.
+- The CI workflow has not yet had a GitHub-hosted run.
+- Public API compatibility is not yet tracked. Establishing the first baseline from the reviewed preview assemblies is feasible after the release source is frozen; there is no earlier approved or published baseline for a meaningful current comparison.
 - Provider capability negotiation beyond the implemented `IStreamingAgentModelClient` interface check is not implemented.
 - Usage normalization across providers is not defined.
 - Content logging/redaction remains deny-by-default but has no configurable policy model.

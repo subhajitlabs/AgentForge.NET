@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string] $PackageDirectory = (Join-Path $PSScriptRoot '..\artifacts\packages')
+    [string] $PackageDirectory = (Join-Path $PSScriptRoot '..\artifacts\packages'),
+
+    [Parameter()]
+    [string] $ExpectedRepositoryCommit
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,6 +73,10 @@ foreach ($package in $packages) {
             [string] $metadata.repository.url -ne 'https://github.com/subhajitlabs/AgentForge.NET') {
             $errors.Add("${id}: repository metadata is missing or incorrect.")
         }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedRepositoryCommit) -and
+            [string] $metadata.repository.commit -ne $ExpectedRepositoryCommit) {
+            $errors.Add("${id}: repository commit '$($metadata.repository.commit)' does not match '$ExpectedRepositoryCommit'.")
+        }
 
         $entryNames = @($archive.Entries.FullName)
         if ($entryNames -notcontains 'README.md') { $errors.Add("${id}: README.md is not in the package.") }
@@ -79,6 +86,25 @@ foreach ($package in $packages) {
             if ([string] $dependency.id -like 'AgentForge.*' -and [string] $dependency.version -ne $expectedVersion) {
                 $errors.Add("${id}: internal dependency '$($dependency.id)' has version '$($dependency.version)'.")
             }
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
+foreach ($symbol in $symbols) {
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($symbol.FullName)
+    try {
+        $expectedId = $expectedPackageIds | Where-Object {
+            $symbol.Name -eq "$($_).$expectedVersion.snupkg"
+        }
+        $pdbEntries = @($archive.Entries | Where-Object FullName -Like 'lib/net10.0/*.pdb')
+        if ($null -eq $expectedId -or @($expectedId).Count -ne 1) {
+            $errors.Add("$($symbol.Name): cannot determine the expected package ID.")
+        }
+        elseif ($pdbEntries.Count -ne 1 -or $pdbEntries[0].FullName -ne "lib/net10.0/$expectedId.pdb") {
+            $errors.Add("$($symbol.Name): expected exactly lib/net10.0/$expectedId.pdb.")
         }
     }
     finally {
