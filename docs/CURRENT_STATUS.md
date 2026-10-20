@@ -1,7 +1,7 @@
 # AgentForge.NET Current Status
 
-Status date: 2026-10-19
-Current milestone: Phase 2 Increment 8 implemented; Gate A release preparation locally verified
+Status date: 2026-10-20
+Current milestone: Phase 2 completed; AgentForge.NET metapackage locally verified and subject to review
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
@@ -9,12 +9,23 @@ This document describes the implementation currently present in this repository.
 
 ## Release readiness status
 
-- **Implemented runtime:** Phase 2 Increments 1 through 8 remain implemented as described below. Gate A adds no runtime feature and changes no public API.
-- **Locally verified package readiness:** The repository packs exactly six `0.2.0-preview.1` libraries and six matching symbol packages. Metadata, internal dependency versions, README files, XML documentation, symbol payloads, and repository revision are checked by `eng/Verify-Packages.ps1`. Samples, tests, and live-verification executables are non-packable.
+- **Implemented runtime:** Phase 2 is complete. Increments 1 through 8 remain implemented as described below. The metapackage adds no runtime feature and changes no public API.
+- **Published release:** The six modular packages from Phase 2 were published as `0.2.0-preview.1` from tag `v0.2.0-preview.1` and source commit `92ebd9c36e159945199f81e9bf24e21f7cded1d8`.
+- **Metapackage milestone:** The dependency-only `AgentForge.NET` metapackage is implemented and locally verified, subject to review. It directly references Hosting, Tools, and Providers.OpenAI; Core and Abstractions remain transitive, and the Microsoft.Extensions.AI adapter remains optional.
+- **Next release:** The next coordinated preview is planned as `0.2.0-preview.2`. It has not been published.
+- **Phase 3:** Architecture planning is separate; Phase 3 implementation has not started.
 - **User-reported live verification:** The four post-fix `gpt-4o-mini` outcomes below were supplied by the user. Gate A made no live OpenAI call and does not independently validate them.
-- **Publication state:** The artifacts are local and unpublished. No tag, GitHub release, NuGet upload, or public indexing/download verification has occurred.
+- **Publication state:** `0.2.0-preview.1` is published. No `0.2.0-preview.2` package, tag, GitHub release, or NuGet upload has been created.
 - **CI state:** `.github/workflows/ci.yml` defines locked restore, Release build, deterministic offline tests, exact packing, and package verification on the pinned SDK. It has been reviewed locally but cannot be called successful until a GitHub-hosted run completes.
 - **Release procedure:** `docs/PHASE2_RELEASE_CHECKLIST.md` is the staged checklist. Founder approval is required before any action outside pre-publication validation.
+
+## AgentForge.NET metapackage verification
+
+On 2026-10-20, SDK 10.0.402 completed locked restore, a Release build with zero warnings and errors, and all 203 deterministic offline tests. Solution packing produced exactly seven `0.2.0-preview.2` primary packages and six symbol packages; the dependency-only metapackage correctly produced no assembly or symbol package. `eng/Verify-Packages.ps1` validated the exact artifact set, metadata, internal versions, direct metapackage dependencies, and absence of metapackage runtime/compile assets.
+
+A clean .NET 10 console application outside the repository installed only `AgentForge.NET` from the isolated local package feed. Hosting, Tools, Providers.OpenAI, Core, and Abstractions resolved from packages, keyed agent registration and resolution compiled, and a credential-free `ScriptedAgentModelClient` run returned the expected result. The temporary consumer was removed after verification. No live provider call was made.
+
+Repository-wide `dotnet format --verify-no-changes --no-restore` reported four pre-existing whitespace diagnostics in three unchanged test files. Those unrelated files were not reformatted as part of this packaging milestone.
 
 ## Implemented Phase 2 Increment 8
 

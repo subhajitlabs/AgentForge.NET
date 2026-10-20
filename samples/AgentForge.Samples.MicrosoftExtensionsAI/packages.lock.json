@@ -23,7 +23,7 @@
       "agentforge.adapters.microsoftextensionsai": {
         "type": "Project",
         "dependencies": {
-          "AgentForge.Abstractions": "[0.2.0-preview.1, )",
+          "AgentForge.Abstractions": "[0.2.0-preview.2, )",
           "Microsoft.Extensions.AI.Abstractions": "[10.11.0, )",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "[10.0.9, )"
         }
@@ -31,15 +31,15 @@
       "agentforge.core": {
         "type": "Project",
         "dependencies": {
-          "AgentForge.Abstractions": "[0.2.0-preview.1, )",
+          "AgentForge.Abstractions": "[0.2.0-preview.2, )",
           "Microsoft.Extensions.Logging.Abstractions": "[10.0.0, )"
         }
       },
       "agentforge.hosting": {
         "type": "Project",
         "dependencies": {
-          "AgentForge.Abstractions": "[0.2.0-preview.1, )",
-          "AgentForge.Core": "[0.2.0-preview.1, )",
+          "AgentForge.Abstractions": "[0.2.0-preview.2, )",
+          "AgentForge.Core": "[0.2.0-preview.2, )",
           "Microsoft.Extensions.DependencyInjection": "[10.0.9, )"
         }
       },

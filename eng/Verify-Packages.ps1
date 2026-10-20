@@ -10,6 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $expectedPackageIds = @(
+    'AgentForge.NET'
     'AgentForge.Abstractions'
     'AgentForge.Core'
     'AgentForge.Hosting'
@@ -17,7 +18,8 @@ $expectedPackageIds = @(
     'AgentForge.Providers.OpenAI'
     'AgentForge.Adapters.MicrosoftExtensionsAI'
 )
-$expectedVersion = '0.2.0-preview.1'
+$expectedSymbolPackageIds = @($expectedPackageIds | Where-Object { $_ -ne 'AgentForge.NET' })
+$expectedVersion = '0.2.0-preview.2'
 $errors = [System.Collections.Generic.List[string]]::new()
 
 $resolvedPackageDirectory = [System.IO.Path]::GetFullPath($PackageDirectory)
@@ -29,7 +31,7 @@ $packages = @(Get-ChildItem -LiteralPath $resolvedPackageDirectory -Filter '*.nu
     Where-Object { -not $_.Name.EndsWith('.snupkg', [StringComparison]::OrdinalIgnoreCase) })
 $symbols = @(Get-ChildItem -LiteralPath $resolvedPackageDirectory -Filter '*.snupkg' -File)
 $expectedPackageNames = @($expectedPackageIds | ForEach-Object { "$($_).$expectedVersion.nupkg" })
-$expectedSymbolNames = @($expectedPackageIds | ForEach-Object { "$($_).$expectedVersion.snupkg" })
+$expectedSymbolNames = @($expectedSymbolPackageIds | ForEach-Object { "$($_).$expectedVersion.snupkg" })
 
 $actualPackageNames = @($packages.Name | Sort-Object)
 $actualSymbolNames = @($symbols.Name | Sort-Object)
@@ -80,7 +82,33 @@ foreach ($package in $packages) {
 
         $entryNames = @($archive.Entries.FullName)
         if ($entryNames -notcontains 'README.md') { $errors.Add("${id}: README.md is not in the package.") }
-        if ($entryNames -notcontains "lib/net10.0/$id.xml") { $errors.Add("${id}: XML documentation is not in the package.") }
+        if ($id -eq 'AgentForge.NET') {
+            $payloadEntries = @($entryNames | Where-Object { $_ -match '^(lib|ref|runtimes)/' })
+            if ($payloadEntries.Count -ne 0) {
+                $errors.Add("${id}: dependency-only metapackage contains runtime or compile assets: $($payloadEntries -join ', ').")
+            }
+
+            $dependencyGroups = @($metadata.dependencies.group)
+            $net10Group = @($dependencyGroups | Where-Object { [string] $_.targetFramework -eq 'net10.0' })
+            if ($net10Group.Count -ne 1) {
+                $errors.Add("${id}: expected exactly one net10.0 dependency group.")
+            }
+            else {
+                $directDependencies = @($net10Group[0].dependency)
+                $directDependencyIds = @($directDependencies | ForEach-Object { [string] $_.id } | Sort-Object)
+                $expectedDirectDependencyIds = @(
+                    'AgentForge.Hosting'
+                    'AgentForge.Providers.OpenAI'
+                    'AgentForge.Tools'
+                ) | Sort-Object
+                if (Compare-Object $expectedDirectDependencyIds $directDependencyIds) {
+                    $errors.Add("${id}: direct dependency set is incorrect: $($directDependencyIds -join ', ').")
+                }
+            }
+        }
+        elseif ($entryNames -notcontains "lib/net10.0/$id.xml") {
+            $errors.Add("${id}: XML documentation is not in the package.")
+        }
 
         foreach ($dependency in @($metadata.dependencies.group.dependency)) {
             if ([string] $dependency.id -like 'AgentForge.*' -and [string] $dependency.version -ne $expectedVersion) {
@@ -96,7 +124,7 @@ foreach ($package in $packages) {
 foreach ($symbol in $symbols) {
     $archive = [System.IO.Compression.ZipFile]::OpenRead($symbol.FullName)
     try {
-        $expectedId = $expectedPackageIds | Where-Object {
+        $expectedId = $expectedSymbolPackageIds | Where-Object {
             $symbol.Name -eq "$($_).$expectedVersion.snupkg"
         }
         $pdbEntries = @($archive.Entries | Where-Object FullName -Like 'lib/net10.0/*.pdb')
@@ -117,4 +145,4 @@ if ($errors.Count -gt 0) {
     exit 1
 }
 
-Write-Host "Verified exactly six AgentForge.NET $expectedVersion packages and symbol packages with expected metadata and contents."
+Write-Host "Verified exactly seven AgentForge.NET $expectedVersion packages, six symbol packages, and the dependency-only metapackage contents."

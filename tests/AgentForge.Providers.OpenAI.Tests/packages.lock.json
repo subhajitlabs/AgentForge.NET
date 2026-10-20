@@ -181,7 +181,7 @@
       "agentforge.providers.openai": {
         "type": "Project",
         "dependencies": {
-          "AgentForge.Abstractions": "[0.2.0-preview.1, )",
+          "AgentForge.Abstractions": "[0.2.0-preview.2, )",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "[10.0.9, )",
           "OpenAI": "[2.14.0, )"
         }

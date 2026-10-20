@@ -57,7 +57,7 @@ jobs:
       - name: Upload verified packages for inspection
         uses: actions/upload-artifact@v4
         with:
-          name: AgentForge.NET-0.2.0-preview.1-${{ github.sha }}
+          name: AgentForge.NET-0.2.0-preview.2-${{ github.sha }}
           path: artifacts/packages/*.*nupkg
           if-no-files-found: error
           retention-days: 7

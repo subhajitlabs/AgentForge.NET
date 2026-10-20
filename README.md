@@ -4,6 +4,7 @@ AgentForge.NET is an in-process, provider-neutral AI agent runtime for .NET 10. 
 
 ## Package responsibilities
 
+- `AgentForge.NET`: dependency-only convenience metapackage for the recommended Hosting, Tools, and OpenAI package set.
 - `AgentForge.Abstractions`: provider-neutral contracts and immutable domain values.
 - `AgentForge.Core`: execution lifecycle and deterministic scripted clients.
 - `AgentForge.Hosting`: DI, named definitions, and the thin `IAgent` facade.
@@ -22,24 +23,29 @@ dotnet test AgentForge.slnx --configuration Release --no-build
 
 ## Install from NuGet
 
-All packages in this preview use version `0.2.0-preview.1`. Install the packages needed by the scenario:
+The next coordinated preview is planned as `0.2.0-preview.2`; it has not been published yet. Once published, the recommended quick-start installation will be:
 
 ```powershell
-# Offline scripted model, runtime, named-agent hosting, and typed tools
-dotnet add package AgentForge.Hosting --version 0.2.0-preview.1
-dotnet add package AgentForge.Tools --version 0.2.0-preview.1
-
-# Add one provider adapter
-dotnet add package AgentForge.Providers.OpenAI --version 0.2.0-preview.1
-# or
-dotnet add package AgentForge.Adapters.MicrosoftExtensionsAI --version 0.2.0-preview.1
+dotnet add package AgentForge.NET --version 0.2.0-preview.2
 ```
 
-`AgentForge.Hosting` transitively supplies `AgentForge.Core` and `AgentForge.Abstractions`. Install `AgentForge.Tools` only when using typed tools. Applications that need contracts without the runtime can reference `AgentForge.Abstractions` directly.
+`AgentForge.NET` is a dependency-only convenience metapackage, not a separate runtime. It directly installs `AgentForge.Hosting`, `AgentForge.Tools`, and `AgentForge.Providers.OpenAI`; Core and Abstractions resolve transitively. All modular packages remain independently installable. For example:
+
+```powershell
+dotnet add package AgentForge.Hosting --version 0.2.0-preview.2
+```
+
+The Microsoft.Extensions.AI adapter remains optional and is deliberately not included in the metapackage:
+
+```powershell
+dotnet add package AgentForge.Adapters.MicrosoftExtensionsAI --version 0.2.0-preview.2
+```
+
+Applications that need contracts without the runtime can continue to reference `AgentForge.Abstractions` directly.
 
 ## Complete offline quick start
 
-Create a .NET 10 console application, install `AgentForge.Hosting`, and replace `Program.cs` with this complete credential-free example:
+Create a .NET 10 console application, install `AgentForge.NET` (or `AgentForge.Hosting` for a minimal modular installation), and replace `Program.cs` with this complete credential-free example:
 
 ```csharp
 using AgentForge.Abstractions;

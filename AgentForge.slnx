@@ -11,6 +11,7 @@
     <Project Path="samples/AgentForge.Samples.MicrosoftExtensionsAI/AgentForge.Samples.MicrosoftExtensionsAI.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/AgentForge.NET/AgentForge.NET.csproj" />
     <Project Path="src/AgentForge.Abstractions/AgentForge.Abstractions.csproj" />
     <Project Path="src/AgentForge.Core/AgentForge.Core.csproj" />
     <Project Path="src/AgentForge.Adapters.MicrosoftExtensionsAI/AgentForge.Adapters.MicrosoftExtensionsAI.csproj" />

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>AgentForge.NET</PackageId>
+    <Description>Convenience metapackage for AgentForge.NET hosting, typed tools, and the official OpenAI provider.</Description>
+    <PackageTags>ai;agents;agent-runtime;openai;dotnet</PackageTags>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
+    <!-- Dependency-only packages intentionally have a TFM dependency group without a matching lib/ref assembly. -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AgentForge.Hosting\AgentForge.Hosting.csproj" />
+    <ProjectReference Include="..\AgentForge.Tools\AgentForge.Tools.csproj" />
+    <ProjectReference Include="..\AgentForge.Providers.OpenAI\AgentForge.Providers.OpenAI.csproj" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>
