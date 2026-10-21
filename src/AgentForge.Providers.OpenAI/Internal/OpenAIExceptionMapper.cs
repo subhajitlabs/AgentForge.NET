@@ -9,6 +9,8 @@ namespace AgentForge.Providers.OpenAI.Internal;
 
 internal static class OpenAIExceptionMapper
 {
+    private static readonly TimeSpan MaximumRetryAfter = TimeSpan.FromHours(24);
+
     public static ModelProviderException FromException(Exception exception)
     {
         if (exception is ModelProviderException provider) return provider;
@@ -56,6 +58,10 @@ internal static class OpenAIExceptionMapper
     public static ModelProviderException Protocol(string message, Exception? inner = null) =>
         new(ModelProviderErrorKind.Protocol, false, message, inner);
 
+    public static ModelProviderException InvalidUsage(Exception? inner = null) =>
+        new(ModelProviderErrorKind.TokenUsageUnavailableOrInvalid, false,
+            "The provider returned invalid token usage.", inner);
+
     private static ModelProviderException Create(ModelProviderErrorKind kind, bool transient, Exception? inner = null) =>
         new(kind, transient, "The OpenAI provider request failed.", inner);
 
@@ -72,7 +78,7 @@ internal static class OpenAIExceptionMapper
     {
         if (response is null || !response.Headers.TryGetValue("Retry-After", out var value)
             || !double.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds)
-            || seconds < 0 || seconds > TimeSpan.MaxValue.TotalSeconds)
+            || seconds < 0 || seconds > MaximumRetryAfter.TotalSeconds)
             return null;
         return TimeSpan.FromSeconds(seconds);
     }

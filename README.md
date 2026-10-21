@@ -23,7 +23,7 @@ dotnet test AgentForge.slnx --configuration Release --no-build
 
 ## Install from NuGet
 
-The next coordinated preview is planned as `0.2.0-preview.2`; it has not been published yet. Once published, the recommended quick-start installation will be:
+The current coordinated preview is `0.2.0-preview.2`. The recommended quick-start installation is:
 
 ```powershell
 dotnet add package AgentForge.NET --version 0.2.0-preview.2
@@ -74,6 +74,49 @@ Console.WriteLine(result.FinalMessage.Text);
 ```
 
 Each call creates a fresh run and preserves the configured model/tool limits. There is no unkeyed default agent. Duplicate agent keys, missing definitions, unknown allowed tools, and multiple model clients fail deterministically before a model invocation.
+
+An optional whole-execution timeout can be configured per named agent. It is disabled by default for compatibility:
+
+```csharp
+.AddAgentDefinition("support", agent => agent
+    .WithInstructions("Answer concisely.")
+    .UseModel("offline-script")
+    .WithLimits(maxModelCalls: 1, maxToolCalls: 1)
+    .WithTimeout(TimeSpan.FromSeconds(30)))
+```
+
+The timeout reaches buffered and streaming model work, stream enumeration, tools, and runtime completion boundaries. Caller cancellation continues to throw `OperationCanceledException`; a runtime deadline throws `AgentExecutionException` with `ExecutionTimedOut`, and caller cancellation wins if both are active. Cancellation is cooperative: a provider or in-process tool that ignores its token may continue running, but its late result is rejected and cannot complete the execution. AgentForge does not automatically retry providers or tools.
+
+Optional resource budgets are also configured per agent and are disabled by default:
+
+```csharp
+.AddAgentDefinition("support", agent => agent
+    .WithInstructions("Answer concisely.")
+    .UseModel("offline-script")
+    .WithLimits(maxModelCalls: 2, maxToolCalls: 2)
+    .WithTimeout(TimeSpan.FromSeconds(30))
+    .WithResourceLimits(
+        maxInputCharacters: 32_000,
+        maxOutputCharacters: 8_000,
+        maxToolArgumentBytes: 16_384,
+        maxToolResultBytes: 65_536))
+```
+
+Observed token budgets are a separate, optional execution-wide policy:
+
+```csharp
+services.AddAgentDefinition("support", agent => agent
+    .WithInstructions("Help the user.")
+    .UseModel("provider-model")
+    .WithTokenBudget(
+        maxInputTokens: 20_000,
+        maxOutputTokens: 4_000,
+        maxTotalTokens: 24_000));
+```
+
+These budgets use only provider-reported usage and accumulate across model turns. They do not estimate tokens from text. Equality is accepted; exceeding any configured input, output, or total limit fails with `TokenBudgetExceeded`. Because usage normally arrives only when a turn ends, the policy is retrospective: one provider call can exceed a budget before AgentForge can stop later model or tool work. A configured budget fails closed with `TokenUsageUnavailableOrInvalid` when reliable usage is missing or malformed.
+
+Text budgets use .NET `string.Length` (UTF-16 code units). The input budget is recalculated from system, user, and assistant text in the complete transcript before every model call. The output budget is cumulative for the execution; streamed text is checked before each delta is published, and terminal buffered text is checked before it is accepted. Tool argument and result budgets are cumulative per execution and use the UTF-8 byte count of each JSON value's raw representation. Equality is accepted. Exceeding a budget never truncates content: it throws `AgentExecutionException` with `InputSizeLimitExceeded`, `OutputSizeLimitExceeded`, `ToolArgumentSizeLimitExceeded`, or `ToolResultSizeLimitExceeded`. An oversized argument batch executes no tools; an oversized result is rejected after the tool has run and does not reverse its side effects.
 
 ## Typed tools and authorization
 
@@ -129,6 +172,46 @@ await foreach (var update in agent.StreamAsync("Hello"))
 
 A non-streaming provider fails with `CapabilityNotSupported`; AgentForge never silently switches modes. Cancellation is propagated to the runtime, provider, and tools.
 
+## Distributed tracing
+
+Core emits optional BCL `ActivitySource` instrumentation from source `AgentForge`. The source version is the Core assembly informational version. No OpenTelemetry SDK, exporter, or telemetry configuration is required; when no `ActivityListener` subscribes, `StartActivity` returns `null` and execution behavior is unchanged.
+
+The activity hierarchy follows work that actually starts:
+
+```text
+agentforge.agent.execute
+  agentforge.model.invoke
+  agentforge.tool.invoke
+  agentforge.model.invoke
+```
+
+Subscribe with an `ActivityListener` whose `ShouldListenTo` accepts `source.Name == "AgentForge"`, or configure an OpenTelemetry provider to include that source. Ambient `Activity.Current` is the execution parent; model and tool activities are children of the execution activity. Buffered calls use `agentforge.operation.mode=buffered`, while asynchronous stream enumeration uses `streaming` and remains open through provider enumeration, event delivery, terminal completion, failure, cancellation, or early disposal.
+
+The closed tag schema is `agentforge.operation.type`, `agentforge.operation.mode`, `agentforge.outcome`, `agentforge.error.code`, `agentforge.model.turn`, `agentforge.tool.invocation`, `agentforge.finish.reason`, `agentforge.usage.input_tokens`, `agentforge.usage.output_tokens`, `agentforge.provider.error.kind`, and `agentforge.provider.is_transient`. Success leaves the standard activity status unset; failures and policy rejections use `ActivityStatusCode.Error`. Caller cancellation is `cancelled`/`caller_cancelled` without error status, while a runtime deadline is `timeout`/`executiontimedout` with error status.
+
+Activities never record prompts, instructions, responses, tool names, tool-call IDs, arguments, results, agent/model/tenant identifiers, credentials, headers, provider bodies, request IDs, raw exception messages, or exception objects. Trace/span IDs provide correlation. Provider SDKs may independently create child activities, and consumers remain responsible for exporter configuration, sampling, retention, and any telemetry added by their own providers or tools.
+
+## Metrics and terminal diagnostics
+
+Core also owns a BCL `Meter` named `AgentForge`, versioned with the Core assembly informational version. It requires no OpenTelemetry SDK or exporter. The instruments are:
+
+| Instrument | Kind | Unit | Recording point |
+|---|---|---|---|
+| `agentforge.agent.executions` | Counter | `{execution}` | Once when an execution starts |
+| `agentforge.agent.execution.duration` | Histogram | `s` | Once at terminal completion, covering the buffered run or streaming enumeration |
+| `agentforge.model.invocations` | Counter | `{invocation}` | Immediately before each actual provider invocation |
+| `agentforge.model.invocation.duration` | Histogram | `s` | Once when that provider invocation terminates |
+| `agentforge.tool.invocations` | Counter | `{invocation}` | Immediately before each actual tool invocation |
+| `agentforge.tool.invocation.duration` | Histogram | `s` | Once when that tool invocation terminates |
+| `agentforge.agent.failures` | Counter | `{failure}` | Once per terminal failed execution; caller cancellation and early disposal are not failures |
+| `agentforge.model.tokens` | Counter | `{token}` | Once per authoritative terminal usage report, tagged `input` or `output` |
+
+Metric attributes use only `agentforge.operation.type`, `agentforge.operation.mode`, `agentforge.outcome`, `agentforge.error.code`, `agentforge.provider.error.kind`, and `agentforge.token.type`. Missing usage emits no token measurement; zero is recorded only when a provider authoritatively reports zero. Streaming deltas never generate token measurements.
+
+One `AgentExecutionDiagnostic` is written for every started execution to the `AgentForge` `DiagnosticListener` under event name `AgentForge.Execution.Terminal`. Subscribe through `DiagnosticListener.AllListeners`, select the listener named `AgentForge`, and subscribe to that event. The payload contains only execution mode, terminal outcome, stable error code and provider-neutral failure kind when applicable, actual model/tool invocation counts, nullable observed input/output tokens, and elapsed duration. Outcomes distinguish success, provider/tool failure, caller cancellation, runtime timeout, policy/resource/provider-processing/token-budget rejection, streaming failure, and `stream_disposed` early disposal.
+
+Metric and diagnostic dimensions never include prompts, responses, arguments, results, exception messages, credentials, or agent/model/tool/tenant/execution/call/provider-request/trace identifiers. There is no diagnostic queue: records are synchronously offered only to enabled listeners. With no listener, the diagnostic payload is not allocated. Consumers own aggregation, export, retention, and callback safety.
+
 ## Providers
 
 For OpenAI, install `AgentForge.Hosting` and `AgentForge.Providers.OpenAI`, set `OPENAI_API_KEY` and the deployment-specific `OPENAI_MODEL`, and never commit credentials:
@@ -159,6 +242,12 @@ Console.WriteLine(result.FinalMessage.Text);
 ```
 
 The adapter uses the OpenAI Responses API, disables SDK retries for AgentForge-owned clients, disables provider storage and parallel tool calls, and keeps provider SDK types out of provider-neutral contracts.
+
+### Failure classification and retry ownership
+
+Provider adapters report sanitized `ModelProviderException` values. Authentication, authorization, invalid-request, model-not-found, protocol, and unknown failures are permanent by default. Rate limiting, service unavailability, timeouts, and transport failures are marked potentially transient. `IsTransient` means only that a later attempt might succeed; it does not prove the failed request was unaccepted or that replay is safe. `RetryAfter` is accepted only when nonnegative and no greater than 24 hours, and provider request IDs accept only a conservative ASCII identifier subset.
+
+AgentForge Core performs exactly one provider invocation per model turn and never retries a tool. Streaming deltas remain provisional, and a failure before or after a delta cannot produce `AgentRunCompleted`. YFlow.NET or another durable workflow owner may decide whether to start a new execution using application-specific idempotency and recovery state. Caller-supplied OpenAI clients and Microsoft.Extensions.AI pipelines own any retries configured below AgentForge; avoid layering those retries unintentionally. AgentForge-owned OpenAI clients continue to set the SDK retry count to zero.
 
 ### Opt-in OpenAI live verification
 
@@ -196,7 +285,15 @@ await using var provider = new ServiceCollection()
     .AddAgentDefinition("interop", agent => agent
         .WithInstructions("Answer concisely.")
         .UseModel("client-selected-model")
-        .WithLimits(maxModelCalls: 2, maxToolCalls: 1))
+        .WithLimits(maxModelCalls: 2, maxToolCalls: 1)
+        .WithResourceLimits(
+            maxInputCharacters: 32_000,
+            maxOutputCharacters: 8_000,
+            maxToolArgumentBytes: 16_000,
+            maxToolResultBytes: 32_000,
+            maxProviderStreamEvents: 2_000,
+            maxProviderContentCharacters: 8_000,
+            maxProviderToolArgumentBytes: 16_000))
     .BuildServiceProvider();
 
 var result = await provider.GetRequiredKeyedService<IAgent>("interop").RunAsync("Hello");
@@ -214,8 +311,10 @@ The credential-free streaming and interoperability samples are under `samples/Ag
 
 ## Supported scope and limitations
 
-This preview supports in-process buffered and streaming runs, one explicitly registered model client per composition, keyed named agents, independent model/tool-call limits, deny-by-default sequential tools, typed tool validation, the OpenAI Responses adapter, and raw `Microsoft.Extensions.AI.IChatClient` interoperability.
+This preview supports in-process buffered and streaming runs, one explicitly registered model client per composition, keyed named agents, independent model/tool-call limits, optional Core input/output/tool-payload limits, optional adapter processing limits, deny-by-default sequential tools, typed tool validation, the OpenAI Responses adapter, and raw `Microsoft.Extensions.AI.IChatClient` interoperability.
 
-It does not provide multi-agent orchestration, routing or fallback, retries, durable execution, persistence or memory, distributed execution, automatic MEAI tool middleware, parallel tools, process sandboxing, or framework-enforced token/output/payload-size limits. Callers must apply cancellation/timeouts and provider-side output limits where available. Streaming deltas are provisional; only `AgentRunCompleted` is authoritative. Tools are trusted in-process application code.
+Core character and byte resource limits govern the execution transcript, accepted output, and tool payloads across a complete run. Adapter processing limits independently bound SDK stream-event processing and per-turn adapter-owned text and function-argument accumulation. Observed token budgets instead govern cumulative provider-reported usage after completed turns. Provider-native maximum-output-token controls act remotely before generation and remain distinct from both local resource limits and retrospective observed budgets. Applications should combine these layers where available. Content is rejected rather than truncated, streaming deltas remain provisional, and only `AgentRunCompleted` is authoritative.
+
+This preview does not provide multi-agent orchestration, routing or fallback, retries, durable execution, persistence or memory, distributed execution, automatic MEAI tool middleware, parallel tools, process sandboxing, token estimation, or provider-native output-token configuration. Tools are trusted in-process application code.
 
 See [the architecture document](docs/architecture.md) for lifecycle invariants, package boundaries, security constraints, non-goals, and planned phases.

@@ -22,12 +22,18 @@ public enum ModelProviderErrorKind
     /// <summary>The provider returned malformed or contradictory protocol data.</summary>
     Protocol,
     /// <summary>The failure could not be classified safely.</summary>
-    Unknown
+    Unknown,
+    /// <summary>Local adapter processing exceeded a configured bound.</summary>
+    ProviderProcessingLimitExceeded,
+    /// <summary>The provider returned invalid usage data.</summary>
+    TokenUsageUnavailableOrInvalid
 }
 
 /// <summary>A sanitized failure raised by a model-provider adapter.</summary>
 public sealed class ModelProviderException : Exception
 {
+    private static readonly TimeSpan MaximumRetryAfter = TimeSpan.FromHours(24);
+
     /// <summary>Creates a provider-adapter exception.</summary>
     public ModelProviderException(ModelProviderErrorKind kind, bool isTransient, string message,
         Exception? innerException = null, TimeSpan? retryAfter = null, string? providerRequestId = null)
@@ -36,18 +42,37 @@ public sealed class ModelProviderException : Exception
         if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
         Kind = kind;
         IsTransient = isTransient;
-        RetryAfter = retryAfter;
-        ProviderRequestId = providerRequestId;
+        RetryAfter = SanitizeRetryAfter(retryAfter);
+        ProviderRequestId = SanitizeProviderRequestId(providerRequestId);
     }
 
     /// <summary>Gets the stable failure classification.</summary>
     public ModelProviderErrorKind Kind { get; }
-    /// <summary>Gets whether retrying may succeed. AgentForge does not retry automatically.</summary>
+    /// <summary>
+    /// Gets whether another attempt may succeed. This is advisory and does not establish that replay is safe.
+    /// AgentForge does not retry automatically.
+    /// </summary>
     public bool IsTransient { get; }
-    /// <summary>Gets the provider retry delay, when safely available.</summary>
+    /// <summary>Gets a nonnegative provider retry delay of at most 24 hours, when safely available.</summary>
     public TimeSpan? RetryAfter { get; }
     /// <summary>Gets a sanitized provider request identifier, when available.</summary>
     public string? ProviderRequestId { get; }
+
+    private static TimeSpan? SanitizeRetryAfter(TimeSpan? retryAfter) =>
+        retryAfter is { } value && value >= TimeSpan.Zero && value <= MaximumRetryAfter
+            ? value
+            : null;
+
+    private static string? SanitizeProviderRequestId(string? providerRequestId)
+    {
+        if (providerRequestId is null || providerRequestId.Length is < 1 or > 128)
+            return null;
+
+        return providerRequestId.All(character =>
+            char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or ':' or '-')
+                ? providerRequestId
+                : null;
+    }
 }
 
 /// <summary>Identifies a stable runtime policy or contract failure.</summary>
@@ -71,8 +96,24 @@ public enum AgentExecutionErrorCode
     ModelOutputFiltered,
     /// <summary>The model refused the request.</summary>
     ModelRefused,
+    /// <summary>The runtime-owned whole-execution deadline expired.</summary>
+    ExecutionTimedOut,
     /// <summary>The configured model client does not support the requested capability.</summary>
-    CapabilityNotSupported
+    CapabilityNotSupported,
+    /// <summary>The model-facing input exceeded its configured character budget.</summary>
+    InputSizeLimitExceeded,
+    /// <summary>The accumulated model output exceeded its configured character budget.</summary>
+    OutputSizeLimitExceeded,
+    /// <summary>The accumulated tool arguments exceeded their configured UTF-8 byte budget.</summary>
+    ToolArgumentSizeLimitExceeded,
+    /// <summary>The accumulated tool results exceeded their configured UTF-8 byte budget.</summary>
+    ToolResultSizeLimitExceeded,
+    /// <summary>Provider events or adapter-owned accumulation exceeded a configured processing bound.</summary>
+    ProviderProcessingLimitExceeded,
+    /// <summary>Observed provider-reported token usage exceeded a configured execution budget.</summary>
+    TokenBudgetExceeded,
+    /// <summary>Required provider-reported token usage was unavailable or invalid.</summary>
+    TokenUsageUnavailableOrInvalid
 }
 
 /// <summary>A runtime policy or model-contract violation.</summary>

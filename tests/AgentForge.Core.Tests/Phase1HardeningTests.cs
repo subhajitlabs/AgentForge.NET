@@ -199,7 +199,7 @@ public sealed class Phase1HardeningTests
     }
 
     [Fact]
-    public async Task RunAsync_UsageOverflow_IsInvalidModelResponseWithCause()
+    public async Task RunAsync_UsageOverflow_IsInvalidTokenUsageWithCause()
     {
         var tool = new DelegateTool("echo");
         var provider = ScriptedAgentModelClient.FromResponses(
@@ -209,7 +209,7 @@ public sealed class Phase1HardeningTests
         var exception = await Assert.ThrowsAsync<AgentExecutionException>(() =>
             Runtime(provider, tool).RunAsync(Request(["echo"])));
 
-        Assert.Equal(AgentExecutionErrorCode.InvalidModelResponse, exception.ErrorCode);
+        Assert.Equal(AgentExecutionErrorCode.TokenUsageUnavailableOrInvalid, exception.ErrorCode);
         Assert.IsType<OverflowException>(exception.InnerException);
     }
 

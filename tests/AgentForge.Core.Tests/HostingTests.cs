@@ -8,6 +8,24 @@ namespace AgentForge.Core.Tests;
 public sealed class HostingTests
 {
     [Fact]
+    public async Task AddAgentDefinition_TokenBudget_IsBoundToKeyedAgent()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IAgentModelClient, FinalModelClient>();
+        services.AddAgentForge();
+        services.AddAgentDefinition("budgeted", agent => agent
+            .WithInstructions("test").UseModel("fake").WithTokenBudget(10, 20, 30));
+        await using var provider = services.BuildServiceProvider();
+
+        var budget = provider.GetRequiredKeyedService<IAgent>("budgeted").Definition.Options.TokenBudget;
+
+        Assert.NotNull(budget);
+        Assert.Equal(10, budget.MaxInputTokens);
+        Assert.Equal(20, budget.MaxOutputTokens);
+        Assert.Equal(30, budget.MaxTotalTokens);
+    }
+
+    [Fact]
     public async Task AddAgentDefinition_BufferedRun_UsesBoundImmutableDefinition()
     {
         var services = new ServiceCollection();

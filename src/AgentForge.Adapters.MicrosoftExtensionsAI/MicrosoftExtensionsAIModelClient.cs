@@ -12,7 +12,8 @@ public sealed class MicrosoftExtensionsAIModelClient : IAgentModelClient, IStrea
 
     /// <summary>
     /// Creates an adapter over a caller-owned chat client. The adapter does not dispose the client and requires
-    /// a raw client pipeline that does not invoke tools automatically.
+    /// a raw client pipeline that does not invoke tools automatically. The caller owns any retry middleware;
+    /// AgentForge does not add another retry layer.
     /// </summary>
     /// <param name="client">The caller-owned chat client.</param>
     public MicrosoftExtensionsAIModelClient(IChatClient client) =>
@@ -30,6 +31,7 @@ public sealed class MicrosoftExtensionsAIModelClient : IAgentModelClient, IStrea
                 mapped.Messages, mapped.Options, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             var result = MicrosoftExtensionsAIResponseMapper.Map(response);
+            ProviderProcessingGuard.Validate(result, request.ResourceLimits);
             cancellationToken.ThrowIfCancellationRequested();
             return result;
         }
@@ -50,12 +52,15 @@ public sealed class MicrosoftExtensionsAIModelClient : IAgentModelClient, IStrea
         var mapped = MicrosoftExtensionsAIRequestMapper.Map(request);
         var updates = GetUpdates(mapped.Messages, mapped.Options, request.ExecutionId, cancellationToken);
         var enumerator = updates.GetAsyncEnumerator(cancellationToken);
-        var accumulator = new MicrosoftExtensionsAIStreamAccumulator();
+        var accumulator = new MicrosoftExtensionsAIStreamAccumulator(request.ResourceLimits);
+        var eventCount = 0L;
         try
         {
             while (await MoveNextAsync(enumerator, request.ExecutionId, cancellationToken).ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                eventCount = ProviderProcessingGuard.Add(
+                    eventCount, 1, request.ResourceLimits?.MaxProviderStreamEvents);
                 foreach (var delta in accumulator.Accept(enumerator.Current)) yield return delta;
             }
             cancellationToken.ThrowIfCancellationRequested();

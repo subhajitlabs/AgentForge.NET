@@ -1,7 +1,9 @@
 # AgentForge.NET Architecture
 
-Status: Approved with amendments  
-Last updated: 2026-10-18
+Status: Phase 3 Increment 8 implemented locally; release-readiness gates complete
+Last updated: 2026-10-21
+
+Phase 3 Increment 1 adds an optional, disabled-by-default whole-execution timeout. Caller cancellation remains `OperationCanceledException`; deadline expiration is the stable `ExecutionTimedOut` policy failure. The runtime uses one linked token across buffered and streaming model work, stream enumeration, tools, and completion boundaries. Cancellation is cooperative, late success from non-cooperative dependencies is rejected, and Core performs no automatic retries. Increment 2 hardens provider failure metadata and classification, verifies the single-attempt buffered, streaming, and tool boundaries, and assigns durable retry ownership to YFlow.NET. Increment 3 adds disabled-by-default input, accumulated output, and cumulative tool-payload budgets at Core's provider-neutral boundaries. Increment 4 adds per-turn SDK event, adapter text, and adapter function-argument bounds and makes the runtime delivery channel explicitly capacity one. Increment 5 adds optional execution-wide observed input, output, and total token budgets using only reliable provider-reported terminal usage. Increment 6 adds exporter-neutral `ActivitySource` spans around execution, model, and tool lifecycles. Increment 7 adds a versioned BCL `Meter` and exactly one opt-in structured terminal diagnostic per execution, without an exporter or logging-provider dependency. Increment 8 completes cross-feature regression, package-graph, public compatibility, isolated-consumer, and documentation validation; it adds no runtime feature or dependency.
 
 Phase 2 Increment 7 adds a thin Hosting-owned `IAgent` facade and keyed named-agent registration. Each facade binds one immutable `AgentDefinition` and delegates to the existing buffered and streaming runtimes. It introduces no second execution loop, provider routing, implicit agent, memory, or automatic tool authorization. Duplicate keys fail during registration; model-client cardinality and allowed-tool existence fail on first resolution before provider invocation.
 
@@ -131,6 +133,11 @@ public sealed record AgentDefinition(
 
 public sealed record AgentExecutionLimits(int MaxModelCalls = 8, int MaxToolCalls = 8);
 
+public sealed record AgentExecutionOptions
+{
+    public TimeSpan? ExecutionTimeout { get; }
+}
+
 public sealed record AgentRunRequest(
     AgentDefinition Agent,
     IReadOnlyList<AgentMessage> Messages);
@@ -229,9 +236,9 @@ Call model with transcript and tool descriptions <------------------+
 
 Lifecycle invariants:
 
-1. Validate before calling external code: non-empty identifiers/instructions, positive model/tool limits, valid initial message roles, and known allowed tools.
+1. Validate before calling external code: non-empty identifiers/instructions, positive model/tool and configured resource limits, valid initial message roles, and known allowed tools.
 2. Copy caller-owned collections into immutable/read-only snapshots so they cannot change during a run.
-3. Check cancellation before and after every awaited provider/tool operation, before each invocation, and before successful completion; pass the token to both dependencies.
+3. Check cancellation before and after every awaited provider/tool operation, before each invocation, and before successful completion; pass the token to both dependencies. When configured, one runtime-owned deadline supplies a linked execution token to buffered calls, streaming enumeration, tools, and completion delivery.
 4. Enforce the positive `MaxModelCalls` limit before every provider invocation.
 5. Enforce the strict model-response invariants above.
 6. Prevalidate the entire tool-call batch before invoking any tool: authorization, registration, non-empty and execution-unique call IDs, non-empty names, valid JSON arguments, and remaining tool-call budget. Any validation failure rejects the whole batch without side effects.
@@ -240,12 +247,27 @@ Lifecycle invariants:
 9. Stop immediately on the first provider/tool failure. Do not synthesize a successful model-visible result from an infrastructure exception.
 10. A model final response ends the run. A response that keeps requesting tools eventually reaches a hard model-call or tool-call limit.
 
+Resource accounting uses deterministic representations. Input and output text use `string.Length` (UTF-16 code units). Before each model call, input is recalculated from all system, user, and assistant text in the accumulated transcript. Accepted terminal model text accumulates against the output budget; streaming additionally counts deltas before publication, so a crossing delta is not emitted. Tool arguments and results use the UTF-8 byte count of `JsonElement.GetRawText()` and accumulate independently for the entire execution. Argument bytes for a complete batch are checked before any tool runs. Result bytes are checked after each invocation but before the result enters the transcript; rejecting a result cannot undo tool side effects. Equality is accepted, arithmetic is checked, content is never truncated, and limit messages contain no rejected payload.
+
+Provider-processing accounting is separate and resets for each model turn. Core counts every provider-neutral streaming event before processing it. OpenAI and Microsoft.Extensions.AI adapters count each SDK update before inspecting it, check aggregate streamed text before appending to adapter builders, and count aggregate function-call argument JSON in UTF-8 bytes across all calls in the turn. Buffered adapter responses are checked immediately after mapping and before return. Exact equality is accepted; overflow is the non-transient `ProviderProcessingLimitExceeded` failure and never produces authoritative completion. These checks cannot prevent an SDK from buffering a full response, terminal response object, event body, or transport data before AgentForge receives it.
+
+Observed token budgets are execution-wide and separate from character/byte resource bounds. Core counts each authoritative completed turn once, retains independent checked input and output totals, derives the checked total, and accepts equality. Missing usage fails closed only when a budget is enabled; negative, inconsistent, or overflowing usage is always invalid. Streaming snapshots are not accumulated as separate turns, and the MEAI adapter retains only the latest usage-only snapshot for terminal reconstruction. A budget rejection occurs before tool execution, another model call, or authoritative runtime completion. The policy is retrospective: a single model call may exceed a budget before usage becomes available. Provider-native output-token limits act remotely and are not token estimates or replacements for this policy.
+
 ### Failure semantics
 
 - Input and configuration errors: standard argument exceptions before execution starts.
 - Runtime policy/contract errors: `AgentExecutionException` with stable `AgentExecutionErrorCode` values such as `ToolCallLimitExceeded`, `ToolNotAllowed`, `ToolNotFound`, and `InvalidModelResponse`. Usage arithmetic is checked; overflow is classified as `InvalidModelResponse` with its cause preserved.
 - Provider/tool faults: `AgentProviderException` or `AgentToolException`, carrying execution/tool/call context and retaining the cause.
 - Cancellation: `OperationCanceledException`; never wrapped as a provider or tool failure when the run token requested cancellation.
+- Runtime deadline: `AgentExecutionException` with `ExecutionTimedOut`. Caller cancellation wins when both cancellation sources are active. A non-cooperative in-process dependency cannot be forcibly terminated, but its late result cannot produce successful completion.
+- Resource bounds: `AgentExecutionException` with `InputSizeLimitExceeded`, `OutputSizeLimitExceeded`, `ToolArgumentSizeLimitExceeded`, or `ToolResultSizeLimitExceeded`. These are runtime policy failures, not transient provider failures.
+- Provider-processing bounds: adapters use sanitized, non-transient `ModelProviderErrorKind.ProviderProcessingLimitExceeded`; Core translates it to `AgentExecutionErrorCode.ProviderProcessingLimitExceeded` while preserving the cause. No payload is copied into the new diagnostics.
+- Observed-token policy: `TokenBudgetExceeded` identifies a cumulative budget rejection; `TokenUsageUnavailableOrInvalid` identifies missing required usage or malformed usage. Neither is transient.
+- Retry: Core does not automatically retry provider or tool operations.
+
+Provider failure transience is advisory rather than a replay-safety guarantee. Authentication, authorization, invalid-request, model-not-found, protocol, and unknown failures are non-transient by default. Rate limiting, service unavailability, provider timeouts, and transport failures are potentially transient, but the provider may already have accepted work. This ambiguity applies even before output is observed and becomes especially important after a streaming delta. Core therefore invokes a provider exactly once per model turn, never retries a tool, and never emits successful completion after terminal failure. YFlow.NET owns durable retry and recovery decisions and must apply its own idempotency evidence. Retry behavior inside caller-owned SDK clients or middleware remains caller-owned; AgentForge-owned OpenAI SDK clients disable SDK retries.
+
+`ModelProviderException` exposes only a fixed safe message plus stable classification by default. Optional retry delays must be nonnegative and at most 24 hours. Optional provider request IDs are limited to 1-128 ASCII letters, digits, `.`, `_`, `:`, or `-`. Raw response bodies, prompts, credentials, and provider exception messages are not copied into AgentForge diagnostics; preserved inner exceptions remain potentially sensitive application-owned diagnostic data.
 
 This initial exception-first API keeps the happy path small. A discriminated result union would make every call inspect status even though cancellation and dependency faults are exceptional in idiomatic .NET. Durable execution may later introduce persisted run status independently of this API.
 
@@ -267,9 +289,19 @@ Milestone 1 does not claim sandboxed tool execution. Tools run in process with t
 
 ## 9. Observability approach
 
-Core currently logs structured start metadata (execution, agent, and model identifiers) and successful completion counts. Message content, tool names/call IDs, and tool arguments/results are excluded. Richer lifecycle events, durations, and failure/cancellation outcomes remain part of the later observability design.
+Core owns one BCL `ActivitySource` named `AgentForge`, versioned with the Core assembly informational version. This source name, the activity names, and the closed tag schema are observability compatibility surfaces. No OpenTelemetry SDK or exporter dependency is required.
 
-OpenTelemetry is deferred to a dedicated milestone so activity names, attributes, metrics, and redaction policy can be designed against working runtime semantics. Stable IDs and lifecycle boundaries in milestone 1 make later instrumentation additive.
+`agentforge.agent.execute` is parented to ambient `Activity.Current` and covers request validation through terminal completion, failure, cancellation, or timeout. Each provider invocation is represented by a child `agentforge.model.invoke`; for streaming this covers actual asynchronous provider enumeration and backpressured delivery rather than creation of the `IAsyncEnumerable`. Each tool that actually begins invocation is represented by a sequential child `agentforge.tool.invoke`. Prevalidation failures do not create synthetic model or tool activities. Early stream disposal cancels the producer and closes all active activities before iterator disposal completes.
+
+Tags are limited to `agentforge.operation.type`, `agentforge.operation.mode`, `agentforge.outcome`, `agentforge.error.code`, `agentforge.model.turn`, `agentforge.tool.invocation`, `agentforge.finish.reason`, reported input/output token counts, provider error kind, and the provider transient advisory flag. Caller cancellation uses outcome `cancelled` and code `caller_cancelled` without error status; runtime deadline expiration uses outcome `timeout`, code `executiontimedout`, and error status. Provider faults, tool faults, policy rejection, malformed responses, resource overflow, provider-processing overflow, token-budget failure, and streaming failure use stable classifications and error status. No exception object or message is attached.
+
+Core also owns a `Meter` named `AgentForge` with the same assembly informational version. Started-work counters are `agentforge.agent.executions`, `agentforge.model.invocations`, and `agentforge.tool.invocations`; terminal histograms are `agentforge.agent.execution.duration`, `agentforge.model.invocation.duration`, and `agentforge.tool.invocation.duration`, measured in seconds. `agentforge.agent.failures` counts each terminal failed execution once. `agentforge.model.tokens` counts each authoritative terminal usage report once with `agentforge.token.type=input|output`; absent usage produces no measurement and streaming deltas never produce usage.
+
+Metric attributes form a closed low-cardinality schema: `agentforge.operation.type`, `agentforge.operation.mode`, `agentforge.outcome`, `agentforge.error.code`, `agentforge.provider.error.kind`, and `agentforge.token.type`. Execution counts are emitted at start. Invocation counts are emitted immediately before actual provider/tool calls. Durations are emitted exactly once when their lifecycle terminates. Caller cancellation, runtime timeout, and early streaming disposal have distinct terminal classifications; cancellation and disposal do not increment the failure counter.
+
+The `AgentForge` `DiagnosticListener` synchronously offers one `AgentForge.Execution.Terminal` event per started execution. Its public read-only `AgentExecutionDiagnostic` payload contains mode, outcome, stable error code, optional provider-neutral failure kind, actual invocation counts, nullable accumulated authoritative token counts, and elapsed duration. No queue or buffer exists, and the payload is allocated only when that event is enabled. Streaming disposal cancels and awaits the producer before emitting the single `stream_disposed` terminal record.
+
+Prompts, instructions, responses, arguments, results, agent/model/tool/tenant identifiers, execution/tool-call/provider-request/trace IDs, credentials, endpoints, headers, provider bodies, and raw exception text are excluded from AgentForge-owned activities, metric attributes, and terminal diagnostics. Trace and span IDs remain available only in tracing. Application tools, provider SDK instrumentation, listeners, processors, exporters, and retention remain consumer-controlled.
 
 ## 10. Architectural tradeoffs
 
@@ -354,11 +386,11 @@ Design before implementation: streaming event model, partial failures, provider 
 
 Acceptance criteria include provider contract tests, opt-in integration tests, cancellation during streaming, no secrets in logs, and equivalent non-streaming semantics.
 
-### Phase 3: resilience and OpenTelemetry
+### Phase 3: resilience and OpenTelemetry — complete locally
 
-Add explicit timeout/retry policy composition and OpenTelemetry activities/metrics. Define which operations are safe to retry and never retry side-effecting tools implicitly.
+Phase 3 provides explicit timeout policy, bounded runtime and adapter processing, retrospective observed-token budgets, provider-neutral failure classification, exporter-neutral activities and metrics, and one structured terminal diagnostic. Core remains single-attempt: replay safety and durable retry belong to YFlow.NET or another workflow owner, and side-effecting tools are never retried automatically.
 
-Acceptance criteria include deterministic retry tests, trace parent propagation, documented spans/metrics, and verified default redaction.
+Acceptance coverage includes cancellation/timeout precedence, single-attempt boundaries, trace parent propagation, metrics and terminal accounting, streaming disposal, package and consumer compatibility, and default sensitive-data exclusion.
 
 ### Phase 4: durable state and PostgreSQL
 

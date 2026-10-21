@@ -13,6 +13,22 @@ public sealed record ModelRequest
         ModelId model,
         IEnumerable<AgentMessage> messages,
         IEnumerable<ToolDescriptor> availableTools)
+        : this(executionId, model, messages, availableTools, null)
+    {
+    }
+
+    /// <summary>Creates an immutable model-request snapshot with optional provider-processing limits.</summary>
+    /// <param name="executionId">The current execution identifier.</param>
+    /// <param name="model">The selected model.</param>
+    /// <param name="messages">The complete transcript.</param>
+    /// <param name="availableTools">Tools permitted for this agent.</param>
+    /// <param name="resourceLimits">Optional immutable resource and provider-processing limits.</param>
+    public ModelRequest(
+        ExecutionId executionId,
+        ModelId model,
+        IEnumerable<AgentMessage> messages,
+        IEnumerable<ToolDescriptor> availableTools,
+        AgentResourceLimits? resourceLimits)
     {
         ArgumentNullException.ThrowIfNull(messages);
         ArgumentNullException.ThrowIfNull(availableTools);
@@ -20,6 +36,7 @@ public sealed record ModelRequest
         Model = model;
         Messages = Array.AsReadOnly(messages.ToArray());
         AvailableTools = Array.AsReadOnly(availableTools.ToArray());
+        ResourceLimits = resourceLimits;
     }
 
     /// <summary>Gets the current execution identifier.</summary>
@@ -33,6 +50,9 @@ public sealed record ModelRequest
 
     /// <summary>Gets the immutable available-tool snapshot.</summary>
     public IReadOnlyList<ToolDescriptor> AvailableTools { get; }
+
+    /// <summary>Gets optional resource and provider-processing limits for this model turn.</summary>
+    public AgentResourceLimits? ResourceLimits { get; }
 }
 
 /// <summary>Output from one model invocation with an explicit terminal reason.</summary>

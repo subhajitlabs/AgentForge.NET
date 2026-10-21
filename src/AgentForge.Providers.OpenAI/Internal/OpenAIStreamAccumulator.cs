@@ -6,9 +6,14 @@ namespace AgentForge.Providers.OpenAI.Internal;
 
 internal sealed class OpenAIStreamAccumulator
 {
+    private readonly AgentResourceLimits? _limits;
     private readonly Dictionary<int, FragmentState> _fragments = [];
     private readonly StringBuilder _text = new();
     private ResponseResult? _terminal;
+    private long _textCharacters;
+    private long _argumentBytes;
+
+    public OpenAIStreamAccumulator(AgentResourceLimits? limits) => _limits = limits;
 
     public bool HasTerminal => _terminal is not null;
 
@@ -23,6 +28,8 @@ internal sealed class OpenAIStreamAccumulator
             case StreamingResponseOutputTextDeltaUpdate text:
                 if (string.IsNullOrEmpty(text.Delta))
                     throw OpenAIExceptionMapper.Protocol("The provider stream emitted an invalid text delta.");
+                _textCharacters = ProviderProcessingGuard.Add(
+                    _textCharacters, text.Delta.Length, _limits?.MaxProviderContentCharacters);
                 _text.Append(text.Delta);
                 return new ModelTextDelta(text.Delta);
             case StreamingResponseFunctionCallArgumentsDeltaUpdate delta:
@@ -72,11 +79,15 @@ internal sealed class OpenAIStreamAccumulator
         if (index < 0 || string.IsNullOrWhiteSpace(itemId))
             throw OpenAIExceptionMapper.Protocol("The provider stream contains an invalid function-call identity.");
         if (!_fragments.TryGetValue(index, out var state))
-            _fragments.Add(index, state = new FragmentState(itemId));
+            _fragments.Add(index, state = new FragmentState(itemId, AddArgumentBytes));
         else if (!StringComparer.Ordinal.Equals(state.ItemId, itemId))
             throw OpenAIExceptionMapper.Protocol("The provider stream contains conflicting function-call identities.");
         return state;
     }
+
+    private void AddArgumentBytes(long bytes) =>
+        _argumentBytes = ProviderProcessingGuard.Add(
+            _argumentBytes, bytes, _limits?.MaxProviderToolArgumentBytes);
 
     private static ModelProviderException ClassifyErrorCode(string? code) => code switch
     {
@@ -86,7 +97,7 @@ internal sealed class OpenAIStreamAccumulator
         _ => new(ModelProviderErrorKind.Unknown, false, "The OpenAI provider request failed.")
     };
 
-    private sealed class FragmentState(string itemId)
+    private sealed class FragmentState(string itemId, Action<long> addArgumentBytes)
     {
         private readonly StringBuilder _arguments = new();
         private string? _doneArguments;
@@ -97,7 +108,9 @@ internal sealed class OpenAIStreamAccumulator
         {
             if (_doneArguments is not null || delta is null)
                 throw OpenAIExceptionMapper.Protocol("The provider stream contains invalid function arguments.");
-            _arguments.Append(delta.ToString());
+            var value = delta.ToString();
+            addArgumentBytes(Encoding.UTF8.GetByteCount(value));
+            _arguments.Append(value);
         }
 
         public void Complete(string? functionName, BinaryData? arguments)
@@ -108,6 +121,10 @@ internal sealed class OpenAIStreamAccumulator
             _doneArguments = arguments.ToString();
             if (_arguments.Length > 0 && !StringComparer.Ordinal.Equals(_arguments.ToString(), _doneArguments))
                 throw OpenAIExceptionMapper.Protocol("The provider stream contains conflicting function arguments.");
+            if (_arguments.Length == 0)
+                addArgumentBytes(Encoding.UTF8.GetByteCount(_doneArguments));
+            else
+                _arguments.Clear();
         }
 
         public void Validate(FunctionCallResponseItem call)

@@ -10,6 +10,9 @@ public sealed class AgentDefinitionBuilder
     private string? _instructions;
     private string? _model;
     private AgentExecutionLimits _limits = new();
+    private TimeSpan? _executionTimeout;
+    private AgentResourceLimits? _resourceLimits;
+    private AgentTokenBudget? _tokenBudget;
 
     internal AgentDefinitionBuilder(string name) => _name = name;
 
@@ -51,12 +54,58 @@ public sealed class AgentDefinitionBuilder
         return this;
     }
 
+    /// <summary>Sets a strictly positive timeout for the entire agent execution.</summary>
+    public AgentDefinitionBuilder WithTimeout(TimeSpan timeout)
+    {
+        _ = new AgentExecutionOptions(timeout);
+        _executionTimeout = timeout;
+        return this;
+    }
+
+    /// <summary>Sets optional per-run Core resource and adapter provider-processing budgets.</summary>
+    /// <param name="maxInputCharacters">Maximum model-facing transcript UTF-16 characters.</param>
+    /// <param name="maxOutputCharacters">Maximum accumulated model-output UTF-16 characters.</param>
+    /// <param name="maxToolArgumentBytes">Maximum cumulative tool-argument JSON UTF-8 bytes.</param>
+    /// <param name="maxToolResultBytes">Maximum cumulative tool-result JSON UTF-8 bytes.</param>
+    /// <param name="maxProviderStreamEvents">Maximum SDK stream events processed per model turn.</param>
+    /// <param name="maxProviderContentCharacters">Maximum provider text retained per model turn in UTF-16 characters.</param>
+    /// <param name="maxProviderToolArgumentBytes">Maximum provider tool-call arguments retained per model turn in UTF-8 bytes.</param>
+    public AgentDefinitionBuilder WithResourceLimits(
+        long? maxInputCharacters = null,
+        long? maxOutputCharacters = null,
+        long? maxToolArgumentBytes = null,
+        long? maxToolResultBytes = null,
+        long? maxProviderStreamEvents = null,
+        long? maxProviderContentCharacters = null,
+        long? maxProviderToolArgumentBytes = null)
+    {
+        _resourceLimits = new AgentResourceLimits(
+            maxInputCharacters,
+            maxOutputCharacters,
+            maxToolArgumentBytes,
+            maxToolResultBytes,
+            maxProviderStreamEvents,
+            maxProviderContentCharacters,
+            maxProviderToolArgumentBytes);
+        return this;
+    }
+
+    /// <summary>Sets optional execution-wide budgets for observed provider-reported token usage.</summary>
+    public AgentDefinitionBuilder WithTokenBudget(long? maxInputTokens = null, long? maxOutputTokens = null, long? maxTotalTokens = null)
+    {
+        _tokenBudget = new AgentTokenBudget(maxInputTokens, maxOutputTokens, maxTotalTokens);
+        return this;
+    }
+
     internal AgentDefinition Build()
     {
         if (_instructions is null)
             throw new InvalidOperationException($"Agent definition '{_name}' requires instructions.");
         if (_model is null)
             throw new InvalidOperationException($"Agent definition '{_name}' requires a model.");
-        return new AgentDefinition(new AgentId(_name), _instructions, new ModelId(_model), _allowedTools, _limits);
+        var options = _executionTimeout is null && _resourceLimits is null && _tokenBudget is null
+            ? AgentExecutionOptions.None
+            : new AgentExecutionOptions(_executionTimeout, _resourceLimits, _tokenBudget);
+        return new AgentDefinition(new AgentId(_name), _instructions, new ModelId(_model), _allowedTools, _limits, options);
     }
 }

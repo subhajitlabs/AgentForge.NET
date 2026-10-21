@@ -36,6 +36,10 @@ internal static class MicrosoftExtensionsAIExceptionMapper
     public static ModelProviderException Protocol(string message, Exception? inner = null) =>
         new(ModelProviderErrorKind.Protocol, false, message, inner);
 
+    public static ModelProviderException InvalidUsage(Exception? inner = null) =>
+        new(ModelProviderErrorKind.TokenUsageUnavailableOrInvalid, false,
+            "The provider returned invalid token usage.", inner);
+
     private static ModelProviderException Create(
         ModelProviderErrorKind kind, bool transient, Exception? inner = null) =>
         new(kind, transient, "The Microsoft.Extensions.AI model client failed.", inner);

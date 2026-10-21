@@ -27,6 +27,28 @@ public sealed class OpenAIProviderTests
         Assert.False(body.RootElement.TryGetProperty("conversation", out _));
     }
 
+    [Theory]
+    [InlineData(6, true)]
+    [InlineData(5, false)]
+    public async Task CompleteAsync_ProviderContentBoundary_IsInclusive(long maximum, bool accepted)
+    {
+        var handler = new TestHandler((_, _) => Task.FromResult(
+            TestTransport.Json(HttpStatusCode.OK, CompletedText("secret"))));
+        var task = TestTransport.Create(handler).CompleteAsync(
+            Request(new(maxProviderContentCharacters: maximum)));
+
+        if (accepted)
+            Assert.Equal("secret", (await task).Message.Text);
+        else
+        {
+            var exception = await Assert.ThrowsAsync<ModelProviderException>(() => task);
+            Assert.Equal(ModelProviderErrorKind.ProviderProcessingLimitExceeded, exception.Kind);
+            Assert.False(exception.IsTransient);
+            Assert.DoesNotContain("secret", exception.Message, StringComparison.Ordinal);
+        }
+        Assert.Equal(1, handler.Calls);
+    }
+
     [Fact]
     public async Task CompleteAsync_TranscriptAndTools_PreserveOrderAndCorrelation()
     {
@@ -133,6 +155,12 @@ public sealed class OpenAIProviderTests
     [InlineData(HttpStatusCode.RequestTimeout, ModelProviderErrorKind.Timeout, true)]
     [InlineData((HttpStatusCode)429, ModelProviderErrorKind.RateLimited, true)]
     [InlineData(HttpStatusCode.BadRequest, ModelProviderErrorKind.InvalidRequest, false)]
+    [InlineData(HttpStatusCode.NotFound, ModelProviderErrorKind.InvalidRequest, false)]
+    [InlineData(HttpStatusCode.InternalServerError, ModelProviderErrorKind.ServiceUnavailable, true)]
+    [InlineData(HttpStatusCode.BadGateway, ModelProviderErrorKind.ServiceUnavailable, true)]
+    [InlineData(HttpStatusCode.ServiceUnavailable, ModelProviderErrorKind.ServiceUnavailable, true)]
+    [InlineData(HttpStatusCode.GatewayTimeout, ModelProviderErrorKind.ServiceUnavailable, true)]
+    [InlineData((HttpStatusCode)418, ModelProviderErrorKind.Unknown, false)]
     public async Task CompleteAsync_HttpError_Classifies(HttpStatusCode status, ModelProviderErrorKind kind, bool transient)
     {
         var client = TestTransport.Create(new TestHandler((_, _) => Task.FromResult(TestTransport.Json(status, "{\"error\":{\"message\":\"hidden\"}}"))));
@@ -153,7 +181,27 @@ public sealed class OpenAIProviderTests
 
         Assert.Equal("hel", Assert.IsType<ModelTextDelta>(events[0]).Text);
         Assert.Equal("lo", Assert.IsType<ModelTextDelta>(events[1]).Text);
-        Assert.Equal("hello", Assert.IsType<ModelResponseCompleted>(events[2]).Response.Message.Text);
+        var completed = Assert.IsType<ModelResponseCompleted>(events[2]).Response;
+        Assert.Equal("hello", completed.Message.Text);
+        Assert.Equal(new ModelUsage(2, 3), completed.Usage);
+    }
+
+    [Fact]
+    public async Task StreamAsync_EventOverflow_StopsBeforeExcessEventAndCompletion()
+    {
+        var delta = """{"type":"response.output_text.delta","sequence_number":1,"item_id":"m","output_index":0,"content_index":0,"delta":"ok","logprobs":[]}""";
+        var terminal = $$"""{"type":"response.completed","sequence_number":2,"response":{{CompletedText("ok")}}}""";
+        var client = TestTransport.Create(new TestHandler((_, _) => Task.FromResult(TestTransport.Sse(delta, terminal))));
+        var observed = new List<ModelStreamEvent>();
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(async () =>
+        {
+            await foreach (var item in client.StreamAsync(Request(new(maxProviderStreamEvents: 1))))
+                observed.Add(item);
+        });
+
+        Assert.Equal(ModelProviderErrorKind.ProviderProcessingLimitExceeded, exception.Kind);
+        Assert.Equal("ok", Assert.IsType<ModelTextDelta>(Assert.Single(observed)).Text);
     }
 
     [Fact]
@@ -204,12 +252,12 @@ public sealed class OpenAIProviderTests
     }
 
     [Fact]
-    public async Task CompleteAsync_InconsistentUsage_ThrowsProtocol()
+    public async Task CompleteAsync_InconsistentUsage_ThrowsInvalidUsage()
     {
         var json = CompletedText("ok").Replace("\"total_tokens\":5", "\"total_tokens\":99", StringComparison.Ordinal);
         var client = TestTransport.Create(new TestHandler((_, _) => Task.FromResult(TestTransport.Json(HttpStatusCode.OK, json))));
         var exception = await Assert.ThrowsAsync<ModelProviderException>(() => client.CompleteAsync(Request()));
-        Assert.Equal(ModelProviderErrorKind.Protocol, exception.Kind);
+        Assert.Equal(ModelProviderErrorKind.TokenUsageUnavailableOrInvalid, exception.Kind);
     }
 
     [Fact]
@@ -253,6 +301,27 @@ public sealed class OpenAIProviderTests
 
         var completion = Assert.IsType<ModelResponseCompleted>(Assert.Single(events));
         Assert.Equal(7, Assert.Single(completion.Response.Message.ToolCalls).Arguments.GetProperty("value").GetInt32());
+    }
+
+    [Theory]
+    [InlineData(11, true)]
+    [InlineData(10, false)]
+    public async Task StreamAsync_FragmentedArgumentsUseCumulativeUtf8Budget(long maximum, bool accepted)
+    {
+        var delta = """{"type":"response.function_call_arguments.delta","sequence_number":1,"item_id":"item","output_index":0,"delta":"{\"value\":"}""";
+        var delta2 = """{"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"item","output_index":0,"delta":"7}"}""";
+        var done = """{"type":"response.function_call_arguments.done","sequence_number":3,"item_id":"item","output_index":0,"name":"demo","arguments":"{\"value\":7}"}""";
+        const string result = """{"id":"r","object":"response","created_at":1,"status":"completed","model":"gpt-test","output":[{"type":"function_call","id":"item","call_id":"call","name":"demo","arguments":"{\"value\":7}","status":"completed"}],"parallel_tool_calls":false,"tools":[]}""";
+        var terminal = $$"""{"type":"response.completed","sequence_number":4,"response":{{result}}}""";
+        var task = CollectAsync(TestTransport.Create(new TestHandler((_, _) => Task.FromResult(
+            TestTransport.Sse(delta, delta2, done, terminal)))).StreamAsync(
+                Request(new(maxProviderToolArgumentBytes: maximum))));
+
+        if (accepted)
+            Assert.IsType<ModelResponseCompleted>(Assert.Single(await task));
+        else
+            Assert.Equal(ModelProviderErrorKind.ProviderProcessingLimitExceeded,
+                (await Assert.ThrowsAsync<ModelProviderException>(() => task)).Kind);
     }
 
     [Fact]
@@ -326,6 +395,28 @@ public sealed class OpenAIProviderTests
         Assert.Null(exception.ProviderRequestId);
     }
 
+    [Theory]
+    [InlineData("-1")]
+    [InlineData("86401")]
+    [InlineData("not-a-delay")]
+    public async Task CompleteAsync_InvalidRetryAfter_IsDiscarded(string retryAfter)
+    {
+        var handler = new TestHandler((_, _) =>
+        {
+            var response = TestTransport.Json(
+                HttpStatusCode.TooManyRequests,
+                "{\"error\":{\"message\":\"hidden\"}}");
+            response.Headers.TryAddWithoutValidation("Retry-After", retryAfter);
+            return Task.FromResult(response);
+        });
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() =>
+            TestTransport.Create(handler).CompleteAsync(Request()));
+
+        Assert.Null(exception.RetryAfter);
+        Assert.Equal(1, handler.Calls);
+    }
+
     [Fact]
     public async Task CompleteAsync_ConcurrentCalls_DoNotShareState()
     {
@@ -353,8 +444,8 @@ public sealed class OpenAIProviderTests
         Assert.Same(provider.GetRequiredService<IAgentModelClient>(), provider.GetRequiredService<IStreamingAgentModelClient>());
     }
 
-    private static ModelRequest Request() => new(
-        ExecutionId.New(), new ModelId("gpt-test"), [new UserMessage("hello")], []);
+    private static ModelRequest Request(AgentResourceLimits? resources = null) => new(
+        ExecutionId.New(), new ModelId("gpt-test"), [new UserMessage("hello")], [], resources);
 
     private static async Task<List<ModelStreamEvent>> CollectAsync(IAsyncEnumerable<ModelStreamEvent> stream)
     {

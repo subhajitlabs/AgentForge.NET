@@ -93,18 +93,15 @@ internal static class MicrosoftExtensionsAIResponseMapper
             return null;
         if (usage.InputTokenCount is not long input || usage.OutputTokenCount is not long output
             || input < 0 || output < 0 || usage.TotalTokenCount is < 0)
-            throw MicrosoftExtensionsAIExceptionMapper.Protocol(
-                "The chat client returned invalid usage values.");
+            throw MicrosoftExtensionsAIExceptionMapper.InvalidUsage();
         long total;
         try { total = checked(input + output); }
         catch (OverflowException exception)
         {
-            throw MicrosoftExtensionsAIExceptionMapper.Protocol(
-                "The chat client returned usage values that exceed supported limits.", exception);
+            throw MicrosoftExtensionsAIExceptionMapper.InvalidUsage(exception);
         }
         if (usage.TotalTokenCount is long suppliedTotal && suppliedTotal != total)
-            throw MicrosoftExtensionsAIExceptionMapper.Protocol(
-                "The chat client returned inconsistent usage values.");
+            throw MicrosoftExtensionsAIExceptionMapper.InvalidUsage();
         return new ModelUsage(input, output);
     }
 

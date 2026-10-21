@@ -99,10 +99,12 @@ internal static class OpenAIResponseMapper
     {
         if (usage is null) return null;
         if (usage.InputTokenCount < 0 || usage.OutputTokenCount < 0 || usage.TotalTokenCount < 0)
-            throw OpenAIExceptionMapper.Protocol("The provider returned invalid usage values.");
-        var total = checked((long)usage.InputTokenCount + usage.OutputTokenCount);
+            throw OpenAIExceptionMapper.InvalidUsage();
+        long total;
+        try { total = checked((long)usage.InputTokenCount + usage.OutputTokenCount); }
+        catch (OverflowException exception) { throw OpenAIExceptionMapper.InvalidUsage(exception); }
         if (total != usage.TotalTokenCount)
-            throw OpenAIExceptionMapper.Protocol("The provider returned inconsistent usage values.");
+            throw OpenAIExceptionMapper.InvalidUsage();
         return new ModelUsage(usage.InputTokenCount, usage.OutputTokenCount);
     }
 }

@@ -130,7 +130,12 @@ public sealed class StreamingRuntimeTests
     {
         var cause = new InvalidOperationException("provider failure");
         var observed = new List<AgentRunEvent>();
-        var client = Client((_, token) => ThrowAfterAsync(new ModelTextDelta("partial"), cause, token));
+        var calls = 0;
+        var client = Client((_, token) =>
+        {
+            calls++;
+            return ThrowAfterAsync(new ModelTextDelta("partial"), cause, token);
+        });
 
         var exception = await Assert.ThrowsAsync<AgentProviderException>(async () =>
         {
@@ -142,6 +147,30 @@ public sealed class StreamingRuntimeTests
         Assert.Single(observed);
         Assert.IsType<AssistantTextDelta>(observed[0]);
         Assert.DoesNotContain(observed, item => item is AgentRunCompleted);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task StreamAsync_ProviderThrowsBeforeDelta_DoesNotRetryOrComplete()
+    {
+        var cause = new InvalidOperationException("provider failure");
+        var calls = 0;
+        var observed = new List<AgentRunEvent>();
+        var client = Client((_, token) =>
+        {
+            calls++;
+            return ThrowBeforeAsync(cause, token);
+        });
+
+        var exception = await Assert.ThrowsAsync<AgentProviderException>(async () =>
+        {
+            await foreach (var item in Runtime(client).StreamAsync(Request()))
+                observed.Add(item);
+        });
+
+        Assert.Same(cause, exception.InnerException);
+        Assert.Empty(observed);
+        Assert.Equal(1, calls);
     }
 
     [Fact]
@@ -439,6 +468,17 @@ public sealed class StreamingRuntimeTests
         cancellationToken.ThrowIfCancellationRequested();
         yield return item;
         await Task.Yield();
+        throw exception;
+    }
+
+    private static async IAsyncEnumerable<ModelStreamEvent> ThrowBeforeAsync(
+        Exception exception,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await Task.Yield();
+        if (cancellationToken.IsCancellationRequested)
+            yield break;
         throw exception;
     }
 

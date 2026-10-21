@@ -23,6 +23,28 @@ public sealed class MicrosoftExtensionsAIModelClientTests
         Assert.Equal(new ModelUsage(2, 3), response.Usage);
     }
 
+    [Theory]
+    [InlineData(6, true)]
+    [InlineData(5, false)]
+    public async Task CompleteAsync_ProviderContentBoundary_IsInclusive(long maximum, bool accepted)
+    {
+        var chat = new ScriptedChatClient(complete: (_, _, _) => Task.FromResult(
+            Response(new ChatMessage(ChatRole.Assistant, "secret"), ChatFinishReason.Stop)));
+        var task = new MicrosoftExtensionsAIModelClient(chat).CompleteAsync(
+            Request(resources: new(maxProviderContentCharacters: maximum)));
+
+        if (accepted)
+            Assert.Equal("secret", (await task).Message.Text);
+        else
+        {
+            var exception = await Assert.ThrowsAsync<ModelProviderException>(() => task);
+            Assert.Equal(ModelProviderErrorKind.ProviderProcessingLimitExceeded, exception.Kind);
+            Assert.False(exception.IsTransient);
+            Assert.DoesNotContain("secret", exception.Message, StringComparison.Ordinal);
+        }
+        Assert.Equal(1, chat.CompleteCalls);
+    }
+
     [Fact]
     public async Task CompleteAsync_MultipleToolCalls_PreservesIdsNamesAndArguments()
     {
@@ -114,14 +136,14 @@ public sealed class MicrosoftExtensionsAIModelClientTests
     }
 
     [Fact]
-    public async Task CompleteAsync_InvalidUsage_ThrowsProtocol()
+    public async Task CompleteAsync_InvalidUsage_ThrowsInvalidUsage()
     {
         var chat = new ScriptedChatClient(complete: (_, _, _) => Task.FromResult(
             Response(new ChatMessage(ChatRole.Assistant, "answer"), ChatFinishReason.Stop,
                 new UsageDetails { InputTokenCount = 2, OutputTokenCount = 3, TotalTokenCount = 99 })));
         var exception = await Assert.ThrowsAsync<ModelProviderException>(() =>
             new MicrosoftExtensionsAIModelClient(chat).CompleteAsync(Request()));
-        Assert.Equal(ModelProviderErrorKind.Protocol, exception.Kind);
+        Assert.Equal(ModelProviderErrorKind.TokenUsageUnavailableOrInvalid, exception.Kind);
     }
 
     [Fact]
@@ -135,6 +157,32 @@ public sealed class MicrosoftExtensionsAIModelClientTests
         Assert.Equal(ModelProviderErrorKind.RateLimited, exception.Kind);
         Assert.True(exception.IsTransient);
         Assert.DoesNotContain(secret, exception.Message, StringComparison.Ordinal);
+        Assert.Equal(1, chat.CompleteCalls);
+    }
+
+    [Theory]
+    [InlineData(System.Net.HttpStatusCode.Unauthorized, ModelProviderErrorKind.Authentication, false)]
+    [InlineData(System.Net.HttpStatusCode.Forbidden, ModelProviderErrorKind.Authorization, false)]
+    [InlineData(System.Net.HttpStatusCode.BadRequest, ModelProviderErrorKind.InvalidRequest, false)]
+    [InlineData(System.Net.HttpStatusCode.NotFound, ModelProviderErrorKind.InvalidRequest, false)]
+    [InlineData(System.Net.HttpStatusCode.RequestTimeout, ModelProviderErrorKind.Timeout, true)]
+    [InlineData(System.Net.HttpStatusCode.TooManyRequests, ModelProviderErrorKind.RateLimited, true)]
+    [InlineData(System.Net.HttpStatusCode.ServiceUnavailable, ModelProviderErrorKind.ServiceUnavailable, true)]
+    [InlineData((System.Net.HttpStatusCode)418, ModelProviderErrorKind.Unknown, false)]
+    public async Task CompleteAsync_HttpFailure_ClassifiesConservatively(
+        System.Net.HttpStatusCode status,
+        ModelProviderErrorKind expectedKind,
+        bool expectedTransient)
+    {
+        var chat = new ScriptedChatClient(complete: (_, _, _) =>
+            throw new HttpRequestException("sensitive-provider-message", null, status));
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() =>
+            new MicrosoftExtensionsAIModelClient(chat).CompleteAsync(Request()));
+
+        Assert.Equal(expectedKind, exception.Kind);
+        Assert.Equal(expectedTransient, exception.IsTransient);
+        Assert.DoesNotContain("sensitive-provider-message", exception.Message, StringComparison.Ordinal);
         Assert.Equal(1, chat.CompleteCalls);
     }
 
@@ -179,13 +227,63 @@ public sealed class MicrosoftExtensionsAIModelClientTests
     }
 
     [Fact]
+    public async Task StreamAsync_DuplicateUsageSnapshots_AreNotDoubleCounted()
+    {
+        var usage = new UsageDetails { InputTokenCount = 1, OutputTokenCount = 2, TotalTokenCount = 3 };
+        var chat = new ScriptedChatClient(stream: (_, _, token) => Stream(token,
+            Update("done", "m", ChatFinishReason.Stop),
+            new ChatResponseUpdate(null, [new UsageContent(usage)]) { MessageId = "m" },
+            new ChatResponseUpdate(null, [new UsageContent(usage)]) { MessageId = "m" }));
+
+        var events = await CollectAsync(new MicrosoftExtensionsAIModelClient(chat).StreamAsync(Request()));
+
+        Assert.Equal(new ModelUsage(1, 2), Assert.IsType<ModelResponseCompleted>(events[^1]).Response.Usage);
+    }
+
+    [Fact]
+    public async Task StreamAsync_EventOverflow_StopsBeforeExcessEventAndCompletion()
+    {
+        var chat = new ScriptedChatClient(stream: (_, _, token) => Stream(token,
+            Update("a", "m"), Update("b", "m", ChatFinishReason.Stop)));
+        var observed = new List<ModelStreamEvent>();
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(async () =>
+        {
+            await foreach (var item in new MicrosoftExtensionsAIModelClient(chat).StreamAsync(
+                Request(resources: new(maxProviderStreamEvents: 1)))) observed.Add(item);
+        });
+
+        Assert.Equal(ModelProviderErrorKind.ProviderProcessingLimitExceeded, exception.Kind);
+        Assert.Equal("a", Assert.IsType<ModelTextDelta>(Assert.Single(observed)).Text);
+    }
+
+    [Fact]
+    public async Task StreamAsync_MultipleFunctionCallsUseCumulativeUtf8ArgumentBudget()
+    {
+        var update = new ChatResponseUpdate(ChatRole.Assistant,
+        [
+            new FunctionCallContent("one", "first", new Dictionary<string, object?> { ["x"] = "é" }),
+            new FunctionCallContent("two", "second", new Dictionary<string, object?> { ["x"] = "é" })
+        ])
+        { MessageId = "m", FinishReason = ChatFinishReason.ToolCalls };
+        var chat = new ScriptedChatClient(stream: (_, _, token) => Stream(token, update));
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => CollectAsync(
+            new MicrosoftExtensionsAIModelClient(chat).StreamAsync(
+                Request(resources: new(maxProviderToolArgumentBytes: 10)))));
+
+        Assert.Equal(ModelProviderErrorKind.ProviderProcessingLimitExceeded, exception.Kind);
+    }
+
+    [Fact]
     public async Task StreamAsync_CompleteToolCalls_RemainPrivateUntilCompletion()
     {
         var update = new ChatResponseUpdate(ChatRole.Assistant,
         [
             new FunctionCallContent("one", "first", new Dictionary<string, object?>()),
             new FunctionCallContent("two", "second", new Dictionary<string, object?>())
-        ]) { MessageId = "m", FinishReason = ChatFinishReason.ToolCalls };
+        ])
+        { MessageId = "m", FinishReason = ChatFinishReason.ToolCalls };
         var chat = new ScriptedChatClient(stream: (_, _, token) => Stream(token, update));
 
         var events = await CollectAsync(new MicrosoftExtensionsAIModelClient(chat).StreamAsync(Request()));
@@ -315,8 +413,8 @@ public sealed class MicrosoftExtensionsAIModelClientTests
         string text, string messageId, ChatFinishReason? finishReason = null) =>
         new(ChatRole.Assistant, text) { MessageId = messageId, FinishReason = finishReason };
 
-    private static ModelRequest Request(string text = "hello") =>
-        new(ExecutionId.New(), new ModelId("model"), [new UserMessage(text)], []);
+    private static ModelRequest Request(string text = "hello", AgentResourceLimits? resources = null) =>
+        new(ExecutionId.New(), new ModelId("model"), [new UserMessage(text)], [], resources);
 
     private static async Task<List<ModelStreamEvent>> CollectAsync(IAsyncEnumerable<ModelStreamEvent> stream)
     {

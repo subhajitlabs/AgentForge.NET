@@ -19,7 +19,7 @@ public sealed class OpenAIAgentModelClient : IAgentModelClient, IStreamingAgentM
 
     /// <summary>
     /// Creates an adapter over a caller-owned SDK client. The caller is responsible for endpoint security
-    /// and disabling SDK retries.
+    /// and SDK retry behavior. AgentForge does not add another retry layer.
     /// </summary>
     public OpenAIAgentModelClient(ResponsesClient client) =>
         _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -34,6 +34,7 @@ public sealed class OpenAIAgentModelClient : IAgentModelClient, IStreamingAgentM
                 OpenAIRequestMapper.Map(request, streaming: false), cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             var mapped = OpenAIResponseMapper.Map(result.Value);
+            ProviderProcessingGuard.Validate(mapped, request.ResourceLimits);
             cancellationToken.ThrowIfCancellationRequested();
             return mapped;
         }
@@ -47,7 +48,8 @@ public sealed class OpenAIAgentModelClient : IAgentModelClient, IStreamingAgentM
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var accumulator = new OpenAIStreamAccumulator();
+        var accumulator = new OpenAIStreamAccumulator(request.ResourceLimits);
+        var eventCount = 0L;
         IAsyncEnumerator<StreamingResponseUpdate>? enumerator = null;
         try
         {
@@ -57,11 +59,14 @@ public sealed class OpenAIAgentModelClient : IAgentModelClient, IStreamingAgentM
             while (await MoveNextAsync(enumerator, cancellationToken).ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                eventCount = ProviderProcessingGuard.Add(
+                    eventCount, 1, request.ResourceLimits?.MaxProviderStreamEvents);
                 var delta = accumulator.Accept(enumerator.Current);
                 if (delta is not null) yield return delta;
             }
             cancellationToken.ThrowIfCancellationRequested();
             var response = accumulator.Complete();
+            ProviderProcessingGuard.Validate(response, request.ResourceLimits);
             cancellationToken.ThrowIfCancellationRequested();
             yield return new ModelResponseCompleted(response);
         }

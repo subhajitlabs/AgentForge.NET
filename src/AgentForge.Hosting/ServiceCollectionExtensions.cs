@@ -15,12 +15,16 @@ public static class ServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton<IAgentToolRegistry, AgentToolRegistry>();
+        services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(provider =>
         {
             var clients = provider.GetServices<IAgentModelClient>().ToArray();
             if (clients.Length != 1)
                 throw new InvalidOperationException("Exactly one AgentForge model client must be registered.");
-            return new AgentRuntime(clients[0], provider.GetRequiredService<IAgentToolRegistry>());
+            return new AgentRuntime(
+                clients[0],
+                provider.GetRequiredService<IAgentToolRegistry>(),
+                provider.GetRequiredService<TimeProvider>());
         });
         services.TryAddSingleton<IAgentRuntime>(provider => provider.GetRequiredService<AgentRuntime>());
         services.TryAddSingleton<IStreamingAgentRuntime>(provider => provider.GetRequiredService<AgentRuntime>());

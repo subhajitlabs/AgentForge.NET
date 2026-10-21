@@ -20,10 +20,25 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
         IAgentModelClient modelClient,
         IAgentToolRegistry toolRegistry,
         ILogger<AgentRuntime>? logger = null)
+        : this(modelClient, toolRegistry, TimeProvider.System, logger)
+    {
+    }
+
+    /// <summary>Creates the runtime with a controllable time source.</summary>
+    /// <param name="modelClient">The provider-neutral model client.</param>
+    /// <param name="toolRegistry">The trusted tool registry.</param>
+    /// <param name="timeProvider">The time source used for execution deadlines.</param>
+    /// <param name="logger">An optional metadata-only logger.</param>
+    public AgentRuntime(
+        IAgentModelClient modelClient,
+        IAgentToolRegistry toolRegistry,
+        TimeProvider timeProvider,
+        ILogger<AgentRuntime>? logger = null)
     {
         _modelClient = modelClient ?? throw new ArgumentNullException(nameof(modelClient));
         ArgumentNullException.ThrowIfNull(toolRegistry);
-        _executionEngine = new AgentExecutionEngine(toolRegistry, logger ?? NullLogger<AgentRuntime>.Instance);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        _executionEngine = new AgentExecutionEngine(toolRegistry, logger ?? NullLogger<AgentRuntime>.Instance, timeProvider);
     }
 
     /// <inheritdoc />
@@ -33,7 +48,9 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
         _executionEngine.ExecuteAsync(
             request,
             (modelRequest, token) => _modelClient.CompleteAsync(modelRequest, token),
-            cancellationToken);
+            "buffered",
+            cancellationToken,
+            callerCancellationToken: cancellationToken);
 
     /// <inheritdoc />
     public async IAsyncEnumerable<AgentRunEvent> StreamAsync(
@@ -41,7 +58,7 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         using var executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var events = Channel.CreateUnbounded<StreamEnvelope>(new UnboundedChannelOptions
+        var events = Channel.CreateBounded<StreamEnvelope>(new BoundedChannelOptions(1)
         {
             SingleReader = true,
             SingleWriter = true,
@@ -50,7 +67,8 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
         var execution = ProduceStreamingEventsAsync(
             request,
             events.Writer,
-            executionCancellation.Token);
+            executionCancellation.Token,
+            cancellationToken);
 
         try
         {
@@ -59,6 +77,12 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
             {
                 if (!events.Reader.TryRead(out pending))
                     continue;
+                if (pending.Event is AgentRunCompleted && pending.ExecutionToken.IsCancellationRequested)
+                {
+                    pending.Acknowledge();
+                    pending = null;
+                    continue;
+                }
                 yield return pending.Event;
                 pending.Acknowledge();
                 pending = null;
@@ -81,11 +105,13 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
     private async Task ProduceStreamingEventsAsync(
         AgentRunRequest request,
         ChannelWriter<StreamEnvelope> writer,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken callerCancellationToken)
     {
+        var streamedOutputCharacters = 0L;
         try
         {
-            var result = await _executionEngine.ExecuteAsync(
+            await _executionEngine.ExecuteAsync(
                 request,
                 (modelRequest, token) => StreamModelTurnAsync(
                     modelRequest,
@@ -93,10 +119,14 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
                         writer,
                         new AssistantTextDelta(text),
                         callbackToken),
+                    request.Agent.Options.ResourceLimits?.MaxOutputCharacters,
+                    () => streamedOutputCharacters,
+                    value => streamedOutputCharacters = value,
                     token),
-                cancellationToken).ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-            await WriteEventAsync(writer, new AgentRunCompleted(result), cancellationToken).ConfigureAwait(false);
+                "streaming",
+                cancellationToken,
+                (completed, token) => WriteEventAsync(writer, new AgentRunCompleted(completed), token),
+                callerCancellationToken).ConfigureAwait(false);
             writer.TryComplete();
         }
         catch (Exception exception)
@@ -111,7 +141,7 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
         AgentRunEvent runEvent,
         CancellationToken cancellationToken)
     {
-        var envelope = new StreamEnvelope(runEvent);
+        var envelope = new StreamEnvelope(runEvent, cancellationToken);
         await writer.WriteAsync(envelope, cancellationToken).ConfigureAwait(false);
         await envelope.WaitForAcknowledgementAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -119,6 +149,9 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
     private async Task<ModelResponse> StreamModelTurnAsync(
         ModelRequest request,
         Func<string, CancellationToken, ValueTask> emitTextAsync,
+        long? maxOutputCharacters,
+        Func<long> getOutputCharacters,
+        Action<long> setOutputCharacters,
         CancellationToken cancellationToken)
     {
         if (_modelClient is not IStreamingAgentModelClient streamingClient)
@@ -138,10 +171,24 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
 
         ModelResponse? response = null;
         var emittedText = false;
+        var providerEvents = 0L;
         await using var enumerator = stream.GetAsyncEnumerator(cancellationToken);
         while (await enumerator.MoveNextAsync().ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            try { providerEvents = checked(providerEvents + 1); }
+            catch (OverflowException exception)
+            {
+                throw new AgentExecutionEngine.ModelTurnRejectedException(
+                    AgentExecutionErrorCode.ProviderProcessingLimitExceeded,
+                    "Provider processing exceeded a configured resource bound.", exception);
+            }
+            if (request.ResourceLimits?.MaxProviderStreamEvents is { } eventLimit && providerEvents > eventLimit)
+            {
+                throw new AgentExecutionEngine.ModelTurnRejectedException(
+                    AgentExecutionErrorCode.ProviderProcessingLimitExceeded,
+                    "Provider processing exceeded a configured resource bound.");
+            }
             var streamEvent = enumerator.Current;
             if (response is not null)
             {
@@ -153,6 +200,25 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
             switch (streamEvent)
             {
                 case ModelTextDelta delta when !string.IsNullOrEmpty(delta.Text):
+                    long outputCharacters;
+                    try
+                    {
+                        outputCharacters = checked(getOutputCharacters() + delta.Text.Length);
+                    }
+                    catch (OverflowException exception)
+                    {
+                        throw new AgentExecutionEngine.ModelTurnRejectedException(
+                            AgentExecutionErrorCode.OutputSizeLimitExceeded,
+                            "The accumulated model output exceeded its configured character budget.",
+                            exception);
+                    }
+                    if (maxOutputCharacters is { } maximum && outputCharacters > maximum)
+                    {
+                        throw new AgentExecutionEngine.ModelTurnRejectedException(
+                            AgentExecutionErrorCode.OutputSizeLimitExceeded,
+                            "The accumulated model output exceeded its configured character budget.");
+                    }
+                    setOutputCharacters(outputCharacters);
                     emittedText = true;
                     await emitTextAsync(delta.Text, cancellationToken).ConfigureAwait(false);
                     break;
@@ -189,12 +255,13 @@ public sealed class AgentRuntime : IAgentRuntime, IStreamingAgentRuntime
         return response;
     }
 
-    private sealed class StreamEnvelope(AgentRunEvent runEvent)
+    private sealed class StreamEnvelope(AgentRunEvent runEvent, CancellationToken executionToken)
     {
         private readonly TaskCompletionSource _acknowledged =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public AgentRunEvent Event { get; } = runEvent;
+        public CancellationToken ExecutionToken { get; } = executionToken;
 
         public void Acknowledge() => _acknowledged.TrySetResult();
 

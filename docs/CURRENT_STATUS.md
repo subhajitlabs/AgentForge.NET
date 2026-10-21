@@ -1,7 +1,7 @@
 # AgentForge.NET Current Status
 
-Status date: 2026-10-20
-Current milestone: Phase 2 completed; AgentForge.NET metapackage locally verified and subject to review
+Status date: 2026-10-21
+Current milestone: Phase 3 Increment 8 implemented locally; release candidate verification complete
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
@@ -10,13 +10,12 @@ This document describes the implementation currently present in this repository.
 ## Release readiness status
 
 - **Implemented runtime:** Phase 2 is complete. Increments 1 through 8 remain implemented as described below. The metapackage adds no runtime feature and changes no public API.
-- **Published release:** The six modular packages from Phase 2 were published as `0.2.0-preview.1` from tag `v0.2.0-preview.1` and source commit `92ebd9c36e159945199f81e9bf24e21f7cded1d8`.
-- **Metapackage milestone:** The dependency-only `AgentForge.NET` metapackage is implemented and locally verified, subject to review. It directly references Hosting, Tools, and Providers.OpenAI; Core and Abstractions remain transitive, and the Microsoft.Extensions.AI adapter remains optional.
-- **Next release:** The next coordinated preview is planned as `0.2.0-preview.2`. It has not been published.
-- **Phase 3:** Architecture planning is separate; Phase 3 implementation has not started.
+- **Published release:** The seven coordinated packages, including the dependency-only `AgentForge.NET` metapackage, were published as `0.2.0-preview.2` from tag `v0.2.0-preview.2` and source commit `8c2e9060e01dac534def63653f8526d9d4ad5f9b`.
+- **Metapackage milestone:** The dependency-only `AgentForge.NET` metapackage is published. It directly references Hosting, Tools, and Providers.OpenAI; Core and Abstractions remain transitive, and the Microsoft.Extensions.AI adapter remains optional.
+- **Phase 3:** Increments 1 through 8 are implemented locally. Increment 8 completes compatibility, cross-feature regression, package, documentation, and isolated external-consumer validation without changing package versions or publishing artifacts.
 - **User-reported live verification:** The four post-fix `gpt-4o-mini` outcomes below were supplied by the user. Gate A made no live OpenAI call and does not independently validate them.
-- **Publication state:** `0.2.0-preview.1` is published. No `0.2.0-preview.2` package, tag, GitHub release, or NuGet upload has been created.
-- **CI state:** `.github/workflows/ci.yml` defines locked restore, Release build, deterministic offline tests, exact packing, and package verification on the pinned SDK. It has been reviewed locally but cannot be called successful until a GitHub-hosted run completes.
+- **Publication state:** `0.2.0-preview.2` is published, and tag `v0.2.0-preview.2` identifies its source commit.
+- **CI state:** Hosted CI run `39447398250` verified the preview.2 source with a zero-warning Release build, all 203 deterministic offline tests passing, and the expected seven primary and six symbol packages.
 - **Release procedure:** `docs/PHASE2_RELEASE_CHECKLIST.md` is the staged checklist. Founder approval is required before any action outside pre-publication validation.
 
 ## AgentForge.NET metapackage verification
@@ -26,6 +25,84 @@ On 2026-10-20, SDK 10.0.402 completed locked restore, a Release build with zero 
 A clean .NET 10 console application outside the repository installed only `AgentForge.NET` from the isolated local package feed. Hosting, Tools, Providers.OpenAI, Core, and Abstractions resolved from packages, keyed agent registration and resolution compiled, and a credential-free `ScriptedAgentModelClient` run returned the expected result. The temporary consumer was removed after verification. No live provider call was made.
 
 Repository-wide `dotnet format --verify-no-changes --no-restore` reported four pre-existing whitespace diagnostics in three unchanged test files. Those unrelated files were not reformatted as part of this packaging milestone.
+
+## Implemented Phase 3 Increment 1
+
+- `AgentExecutionOptions` adds an immutable, optional whole-execution timeout without changing the existing `AgentDefinition` constructor. The default remains no runtime-owned timeout.
+- `AgentDefinitionBuilder.WithTimeout(TimeSpan)` configures the same policy for keyed `IAgent` registrations and rejects non-positive values.
+- One `TimeProvider`-backed linked cancellation token reaches buffered provider calls, streaming provider enumeration, tool execution, event delivery, and internal completion boundaries.
+- Caller cancellation remains `OperationCanceledException`. Runtime deadline expiration is `AgentExecutionException` with the stable `ExecutionTimedOut` code, and caller cancellation wins when both sources are active.
+- A provider or tool that ignores cancellation cannot turn a timed-out run into a successful result or `AgentRunCompleted`. Such in-process work cannot be forcibly terminated and may delay observation of the timeout until it returns.
+- Streamed text remains provisional, and a timed-out stream emits no authoritative completion event.
+- Core performs no automatic provider or tool retries.
+- On 2026-10-20, SDK 10.0.402 completed locked restore, a Release build with zero warnings and errors, and all 217 deterministic offline tests. The total comprises 118 Core/runtime/Hosting tests, 31 typed-tool tests, 33 OpenAI provider tests, 23 Microsoft.Extensions.AI adapter tests, and 12 live-verification guard tests. Targeted formatting verification for every changed C# file passed. No live provider call was made.
+
+## Implemented Phase 3 Increment 2
+
+- Provider classifications remain provider-neutral and stable: authentication, authorization, invalid request, model not found, protocol, and unknown are permanent by default; rate limiting, service unavailability, timeout, and transport are potentially transient.
+- `IsTransient` is explicitly advisory and does not establish replay safety or prove that a provider did not accept work.
+- `ModelProviderException` now defensively accepts `RetryAfter` only from zero through 24 hours and request IDs only when they contain 1-128 conservative ASCII identifier characters. Fixed adapter messages do not copy provider bodies, prompts, credentials, or raw exception messages.
+- Core remains single-attempt. Buffered failures, streaming failures before or after provisional output, terminal stream failures, and tool failures stop immediately without automatic retry or authoritative completion.
+- AgentForge-owned OpenAI clients continue to configure `ClientRetryPolicy(0)`. Caller-owned OpenAI clients and Microsoft.Extensions.AI pipelines own any lower-level retry policy, and YFlow.NET owns durable retry and recovery decisions.
+- Timeout and caller-cancellation precedence from Increment 1 remain unchanged. Transient classification does not convert cancellation or runtime timeout into a retry.
+- On 2026-10-20, SDK 10.0.402 completed locked restore, a Release build with zero warnings and errors, and all 252 deterministic offline tests. The total comprises 136 Core/runtime/Hosting tests, 31 typed-tool tests, 42 OpenAI provider tests, 31 Microsoft.Extensions.AI adapter tests, and 12 live-verification guard tests. Targeted formatting verification for the new and production Increment 2 files passed; two previously recorded whitespace diagnostics remain in unchanged regions of existing test files. No live provider call was made.
+
+## Implemented Phase 3 Increment 3
+
+- `AgentResourceLimits` adds independently optional maximum input/output characters and cumulative tool argument/result UTF-8 bytes. Every configured value is strictly positive; all limits remain disabled by default.
+- Text uses `string.Length` (UTF-16 code units). Input includes system, user, and assistant transcript text and is recalculated before every provider invocation. Accepted buffered terminal text accumulates across the run; streaming deltas are accumulated and checked before publication.
+- Tool JSON uses the UTF-8 byte count of its raw JSON representation. Argument bytes accumulate across the execution and the complete batch is checked before any tool side effect. Result bytes accumulate after invocation and are checked before transcript insertion or another model call; rejection does not reverse side effects.
+- Exact equality is accepted. Checked arithmetic and one-unit-over-limit cases produce stable provider-neutral resource error codes. Content is never truncated or included in limit messages or logs.
+- Existing timeout and caller-cancellation precedence, tool-call budgets, sequential execution, single-attempt boundaries, public runtime/facade contracts, keyed registration, and provider adapters remain unchanged.
+- Provider SDK buffering, adapter stream accumulators, provider event limits, provider-native output controls, and token budgets remain deferred to Increment 4 or later.
+- On 2026-10-21, SDK 10.0.402 completed locked restore, a Release build with zero warnings and errors, and all 269 deterministic offline tests. The total comprises 153 Core/runtime/Hosting tests, 31 typed-tool tests, 42 OpenAI provider tests, 31 Microsoft.Extensions.AI adapter tests, and 12 live-verification guard tests. Seventeen test cases were added over the verified Increment 2 baseline. Targeted formatting verification for every Increment 3 C# file and `git diff --check` passed. No live provider call was made.
+
+## Implemented Phase 3 Increment 4
+
+- `AgentResourceLimits` adds independently optional `MaxProviderStreamEvents`, `MaxProviderContentCharacters`, and `MaxProviderToolArgumentBytes`; all remain disabled by default and reject non-positive configuration. The existing constructor calls, execution options, agent definitions, and keyed registration flow remain valid.
+- Processing accounting resets per model turn. Each SDK event is counted before it is processed; text uses UTF-16 `string.Length`; function-call arguments use cumulative UTF-8 JSON bytes across every call in the turn. Equality is accepted and content is never truncated.
+- Core also counts provider-neutral stream events, preserving the same protection for custom streaming clients. Adapter overflow is sanitized and non-transient and Core reports stable `ProviderProcessingLimitExceeded` policy failure. Provisional deltas may already have been observed, but no successful completion is emitted after overflow and no retry occurs.
+- OpenAI checks buffered mapped responses, streamed text before builder append, fragmented function-call arguments before append, multiple calls cumulatively, and raw SDK event count. Microsoft.Extensions.AI checks buffered mapped responses, text and function-call contents before retaining cloned updates, cumulative calls, and raw update count.
+- The runtime producer/consumer channel is now explicitly bounded to capacity one while retaining acknowledgement, cancellation, timeout, and early-disposal behavior.
+- Core resource limits govern full-run transcript/output/tool accounting. Adapter processing limits govern per-turn local processing. SDK-internal buffers allocated before delivery cannot be prevented by these checks, and provider-native token/output controls remain a distinct remote capability. Increment 5 token budgets are not implemented.
+- On 2026-10-21, SDK 10.0.402 completed locked restore, a Release build with zero warnings and errors, and all 282 deterministic offline tests. The total comprises 157 Core/runtime/Hosting tests, 31 typed-tool tests, 47 OpenAI provider tests, 35 Microsoft.Extensions.AI adapter tests, and 12 live-verification guard tests. Thirteen test cases were added over the verified Increment 3 baseline. Formatting verification for every Increment 4 C# file and `git diff --check` passed. No live provider call was made.
+
+## Implemented Phase 3 Increment 5
+
+- `AgentTokenBudget` adds optional positive maximum observed input, output, and total tokens. `AgentExecutionOptions` and `AgentDefinitionBuilder.WithTokenBudget(...)` expose the policy additively; all limits remain disabled by default.
+- Core counts provider-reported usage once per authoritative completed model turn across the whole execution, using separate checked input/output counters and a checked total. Exact equality is accepted and any configured limit crossed produces `TokenBudgetExceeded` before tools, another model call, or completion.
+- Missing usage is preserved as unknown when budgets are disabled and fails closed as `TokenUsageUnavailableOrInvalid` when any budget is configured. Negative, inconsistent, and overflowing usage is rejected under the same stable invalid-usage contract without content-bearing diagnostics.
+- OpenAI maps reliable Responses API terminal usage for buffered and streaming turns. MEAI maps buffered terminal usage and retains only the latest usage-only streaming snapshot so repeated cumulative snapshots are not double-counted. Neither adapter fabricates missing usage.
+- Observed budgets are retrospective: a single provider call can exceed a configured budget before terminal usage becomes available. They are distinct from provider-native maximum-output-token controls and from character/byte resource bounds.
+- On 2026-10-21, SDK 10.0.402 completed locked restore, a Release build with zero warnings and errors, and all 299 deterministic offline tests. The total comprises 173 Core/runtime/Hosting tests, 31 typed-tool tests, 47 OpenAI provider tests, 36 Microsoft.Extensions.AI adapter tests, and 12 live-verification guard tests. Seventeen test cases were added over the verified Increment 4 baseline. Relevant Increment 5 formatting verification and `git diff --check` passed. No live provider call was made.
+
+## Implemented Phase 3 Increment 6
+
+- Core uses the built-in `ActivitySource` named `AgentForge`, versioned with the Core assembly informational version. There is no mandatory OpenTelemetry SDK, exporter, telemetry service, or setup.
+- `agentforge.agent.execute` covers a buffered run or the actual streaming enumeration lifecycle. Actual provider turns and tool invocations create nested `agentforge.model.invoke` and `agentforge.tool.invoke` activities under the execution activity and ambient parent context. Operations rejected before invocation do not produce synthetic child activities.
+- The closed, content-free tag schema records operation type/mode, terminal outcome, stable error code, turn/invocation ordinal, finish reason, reported token counts, and sanitized provider classification/transience. Caller-controlled agent, model, tool, tenant, execution, call, and provider-request identifiers are omitted.
+- Success, provider/tool failure, policy and contract rejection, caller cancellation, runtime timeout, resource/provider-processing/token-budget overflow, streaming failure after provisional output, and early disposal all close active activities. Cancellation remains distinct from timeout and does not acquire error status; existing exception contracts and bounded-channel backpressure remain unchanged.
+- Sixteen deterministic tests use `ActivityListener` and scripted clients to cover disabled instrumentation, buffered and streaming hierarchy, model/tool spans, ambient parentage, terminal classifications, limits, provisional-output failure, early disposal, concurrency isolation, reported usage, and sensitive-data exclusion.
+- On 2026-10-21, SDK 10.0.402 completed locked restore, a Release build with zero warnings and errors, and all 315 deterministic offline tests. The total comprises 189 Core/runtime/Hosting tests, 31 typed-tool tests, 47 OpenAI provider tests, 36 Microsoft.Extensions.AI adapter tests, and 12 live-verification guard tests. Sixteen tests were added over the verified Increment 5 baseline. Formatting verification for every Increment 6 C# file and `git diff --check` passed. No live provider call was made.
+
+## Implemented Phase 3 Increment 7
+
+- Core owns a BCL `Meter` named `AgentForge`, versioned from the Core assembly informational version like `ActivitySource`. It introduces no OpenTelemetry SDK, exporter, collector, logging-provider, or service dependency.
+- Started execution/model/tool counters and terminal duration histograms cover actual buffered or streaming lifecycles. `agentforge.agent.failures` records one terminal failed execution, while caller cancellation and early disposal remain non-failure outcomes. Runtime timeout is distinct.
+- `agentforge.model.tokens` records input/output only once per valid authoritative model-turn usage report. Missing usage emits no measurement; streaming deltas do not affect token metrics; usage observed before a token-budget rejection remains accounted.
+- Metric dimensions are limited to stable operation type/mode, terminal outcome, stable error code, provider-neutral failure kind, and token direction. Caller-controlled identifiers and content are excluded.
+- The opt-in `AgentForge` `DiagnosticListener` emits exactly one `AgentForge.Execution.Terminal` record per started execution. `AgentExecutionDiagnostic` contains mode, terminal outcome, optional stable classifications, actual invocation counts, nullable observed token totals, and duration. It contains no payload content, identifiers, exception objects/messages, or unbounded queue.
+- Streaming enumeration duration includes backpressured delivery. Failure after provisional output cannot emit success. Early iterator disposal cancels and awaits the producer and records `stream_disposed`; concurrent runs retain isolated accounting.
+- Twenty-one deterministic tests use `MeterListener`, `DiagnosticListener`, `ActivityListener`, scripted clients, and signal-based coordination to cover the Increment 7 acceptance cases, including isolation from throwing consumer callbacks.
+- On 2026-10-21, SDK 10.0.402 completed locked restore, a Release build with zero warnings and errors, and all 336 deterministic offline tests. The total comprises 210 Core/runtime/Hosting tests, 31 typed-tool tests, 47 OpenAI provider tests, 36 Microsoft.Extensions.AI adapter tests, and 12 live-verification guard tests. Twenty-one tests were added over the verified Increment 6 baseline. Targeted Increment 7 formatting verification and `git diff --check` passed. No live provider call was made.
+
+## Implemented Phase 3 Increment 8
+
+- The complete Phase 3 diff was reviewed against the published `0.2.0-preview.2` source boundary. Existing constructors, runtime interfaces, buffered and streaming APIs, and keyed `IAgent` registration remain available; Phase 3 public additions are additive immutable policy values, stable error classifications, builder methods, and the read-only terminal diagnostic payload.
+- Cross-feature regression coverage now combines streaming timeout with resource limits, token-budget rejection after provisional output, provider failure with simultaneous trace/metric/diagnostic listeners, multi-turn resource and token budgets, and early stream disposal with all observability listeners active.
+- The seven-package graph remains unchanged. `AgentForge.NET` is dependency-only and directly references Hosting, Tools, and Providers.OpenAI. The Microsoft.Extensions.AI adapter remains optional and outside the metapackage dependency set. No new package dependency or version change was introduced.
+- An isolated .NET 10 consumer restored the locally packed packages from a temporary feed and exercised public Hosting registration, keyed resolution, buffered and streaming scripted execution, timeout/resource/token configuration, and ActivitySource, Meter, and terminal-diagnostic subscriptions. No unpublished dependency was fetched from nuget.org and no live provider call was made.
+- SDK 10.0.402 completed locked restore, a zero-warning Release build, all 341 deterministic offline tests, package validation for all seven primary and six symbol packages, targeted whitespace verification for every changed C# file, and `git diff --check`. Repository-wide formatting remains blocked only by two pre-existing whitespace diagnostics in unchanged `tests/AgentForge.LiveVerification.Tests/LiveVerificationGuardTests.cs`.
 
 ## Implemented Phase 2 Increment 8
 
@@ -314,13 +391,13 @@ The following are intentionally not implemented and have not been verified:
 - Durable execution, checkpoints, resume, idempotency journals, or background workers.
 - Persistent conversation state or memory.
 - PostgreSQL, Redis, vector stores, embeddings, or retrieval.
-- Retries, timeouts, circuit breakers, rate limiting, or provider fallback.
-- OpenTelemetry activities, metrics, semantic conventions, or exporters.
+- Automatic retries, independent model/tool timeout policies, circuit breakers, rate limiting, or provider fallback.
+- OpenTelemetry metrics, standardized GenAI semantic conventions, or exporters.
 - ASP.NET Core endpoints or hosted-service integration.
 - Parallel tool execution.
 - Tool approval workflows, process isolation, or sandboxing.
 - Multimodal message content.
-- NuGet publication, package signing, or automated public API compatibility enforcement.
+- Package signing or automated public API compatibility enforcement.
 
 The broader product vision and later phases in `docs/architecture.md` remain plans, not verified capabilities.
 
@@ -336,17 +413,16 @@ The broader product vision and later phases in `docs/architecture.md` remain pla
 - Stream cancellation is cooperative. Local disposal prevents later Core work, but cannot guarantee cancellation of remote work already accepted by a provider.
 - The scripted model client is a deterministic development/test component and does not demonstrate provider protocol compatibility.
 - The OpenAI Responses SDK surface is experimental in pinned version 2.14.0 and must be contract-reviewed before upgrade.
-- Caller-owned `ResponsesClient` instances cannot be audited by AgentForge for endpoint security or disabled retry policy.
+- Caller-owned `ResponsesClient` instances cannot be audited by AgentForge for endpoint security or retry policy; any SDK retries they perform occur below AgentForge's single adapter invocation.
 - Typed streaming does not expose a convenient raw response header surface, so streaming provider request IDs remain unavailable.
 - The abstractions-only Microsoft.Extensions.AI surface cannot reliably identify a middleware pipeline that invokes tools automatically. Such wrapped clients are unsupported; supply a raw client that returns tool calls to AgentForge.
 - Microsoft.Extensions.AI has no standard refusal finish reason in 10.11.0. Extensible unrecognized finish reasons map conservatively to `Unknown` rather than being guessed as refusals.
 - The Microsoft.Extensions.AI adapter owns neither lifetime nor disposal of its caller-supplied `IChatClient`.
-- Metadata-only structured logging and redaction are regression tested, but there is no dedicated telemetry package or configurable content-capture policy.
+- Activity tracing is content-free and exporter-neutral, but there is no dedicated telemetry package, metrics, exporter, or configurable content-capture policy.
 - The repository-local `.dotnet-home` directory is an ignored CLI artifact and is not product source.
 
 ## Outstanding issues
 
-- The CI workflow has not yet had a GitHub-hosted run.
 - Public API compatibility is not yet tracked. Establishing the first baseline from the reviewed preview assemblies is feasible after the release source is frozen; there is no earlier approved or published baseline for a meaningful current comparison.
 - Provider capability negotiation beyond the implemented `IStreamingAgentModelClient` interface check is not implemented.
 - Usage normalization across providers is not defined.
@@ -357,4 +433,4 @@ None of these outstanding issues invalidate the verified Phase 1 acceptance resu
 
 ## Next recommended task
 
-Stop after Increment 8. Perform the final Phase 2 architecture and release-readiness review. Do not begin Phase 3 without explicit approval.
+Review Phase 3 Increment 7. Do not begin Increment 8 until Increment 7 is accepted.

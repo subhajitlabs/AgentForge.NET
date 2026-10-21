@@ -202,12 +202,18 @@ public sealed class AgentRuntimeTests
     public async Task RunAsync_ProviderFailure_PreservesCause()
     {
         var cause = new InvalidOperationException("provider failed");
-        var model = new ScriptedAgentModelClient([(_, _) => Task.FromException<ModelResponse>(cause)]);
+        var calls = 0;
+        var model = new ScriptedAgentModelClient([(_, _) =>
+        {
+            calls++;
+            return Task.FromException<ModelResponse>(cause);
+        }]);
 
         var exception = await Assert.ThrowsAsync<AgentProviderException>(() => CreateRuntime(model).RunAsync(Request()));
 
         Assert.Same(cause, exception.InnerException);
         Assert.NotEqual(Guid.Empty, exception.ExecutionId.Value);
+        Assert.Equal(1, calls);
     }
 
     [Fact]
@@ -227,7 +233,7 @@ public sealed class AgentRuntimeTests
     }
 
     [Fact]
-    public async Task RunAsync_NegativeUsage_IsInvalidModelResponse()
+    public async Task RunAsync_NegativeUsage_IsInvalidTokenUsage()
     {
         var model = ScriptedAgentModelClient.FromResponses(ModelResponse.Completed(
             AssistantMessage.FromText("text"),
@@ -235,7 +241,7 @@ public sealed class AgentRuntimeTests
 
         var exception = await Assert.ThrowsAsync<AgentExecutionException>(() => CreateRuntime(model).RunAsync(Request()));
 
-        Assert.Equal(AgentExecutionErrorCode.InvalidModelResponse, exception.ErrorCode);
+        Assert.Equal(AgentExecutionErrorCode.TokenUsageUnavailableOrInvalid, exception.ErrorCode);
     }
 
     [Fact]
@@ -287,7 +293,8 @@ public sealed class AgentRuntimeTests
             {
                 onInvoke?.Invoke(invocation);
                 return Task.FromResult(Json("{\"ok\":true}"));
-            }) { }
+            })
+        { }
 
         public RecordingTool(string name, Func<ToolInvocation, CancellationToken, Task<JsonElement>> invoke)
         {
