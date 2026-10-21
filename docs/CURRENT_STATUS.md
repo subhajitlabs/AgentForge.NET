@@ -1,7 +1,7 @@
 # AgentForge.NET Current Status
 
 Status date: 2026-10-21
-Current milestone: Phase 3 Increment 8 implemented locally; release candidate verification complete
+Current milestone: Phase 3 complete; 0.3.0-preview.1 release candidate verification complete
 Target framework: .NET 10 (`net10.0`)  
 Verification SDK: 10.0.402
 
@@ -9,14 +9,15 @@ This document describes the implementation currently present in this repository.
 
 ## Release readiness status
 
-- **Implemented runtime:** Phase 2 is complete. Increments 1 through 8 remain implemented as described below. The metapackage adds no runtime feature and changes no public API.
+- **Implemented runtime:** Phase 3 Increments 1 through 8 are complete as described below.
 - **Published release:** The seven coordinated packages, including the dependency-only `AgentForge.NET` metapackage, were published as `0.2.0-preview.2` from tag `v0.2.0-preview.2` and source commit `8c2e9060e01dac534def63653f8526d9d4ad5f9b`.
 - **Metapackage milestone:** The dependency-only `AgentForge.NET` metapackage is published. It directly references Hosting, Tools, and Providers.OpenAI; Core and Abstractions remain transitive, and the Microsoft.Extensions.AI adapter remains optional.
-- **Phase 3:** Increments 1 through 8 are implemented locally. Increment 8 completes compatibility, cross-feature regression, package, documentation, and isolated external-consumer validation without changing package versions or publishing artifacts.
+- **Phase 3:** Increments 1 through 8 are committed on `main`. Release preparation coordinates all seven packages as `0.3.0-preview.1`; local release-candidate verification is complete and publication still requires explicit approval.
 - **User-reported live verification:** The four post-fix `gpt-4o-mini` outcomes below were supplied by the user. Gate A made no live OpenAI call and does not independently validate them.
-- **Publication state:** `0.2.0-preview.2` is published, and tag `v0.2.0-preview.2` identifies its source commit.
-- **CI state:** Hosted CI run `39447398250` verified the preview.2 source with a zero-warning Release build, all 203 deterministic offline tests passing, and the expected seven primary and six symbol packages.
+- **Publication state:** `0.2.0-preview.2` remains the latest published version. `0.3.0-preview.1` is not published and has no tag or GitHub release.
+- **CI state:** Hosted CI run `39617860708` verified Phase 3 commit `9598f769b0f3dce587d928a693c1c89d45d20ef8` with a zero-warning Release build, all 341 deterministic offline tests passing, and the expected seven primary and six symbol packages at the prior package version.
 - **Release procedure:** `docs/PHASE2_RELEASE_CHECKLIST.md` is the staged checklist. Founder approval is required before any action outside pre-publication validation.
+- **0.3.0-preview.1 preparation:** SDK 10.0.402 completed locked restore, a zero-warning Release build, all 341 deterministic offline tests, exact seven-package/six-symbol validation, direct SourceLink inspection, and an isolated .NET 10 consumer run using the local metapackage. Preparation artifacts identify Phase 3 commit `9598f769b0f3dce587d928a693c1c89d45d20ef8`; final immutable release artifacts and hashes must be regenerated from the eventual approved release commit.
 
 ## AgentForge.NET metapackage verification
 

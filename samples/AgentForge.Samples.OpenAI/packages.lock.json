@@ -84,22 +84,22 @@
       "agentforge.core": {
         "type": "Project",
         "dependencies": {
-          "AgentForge.Abstractions": "[0.2.0-preview.2, )",
+          "AgentForge.Abstractions": "[0.3.0-preview.1, )",
           "Microsoft.Extensions.Logging.Abstractions": "[10.0.0, )"
         }
       },
       "agentforge.hosting": {
         "type": "Project",
         "dependencies": {
-          "AgentForge.Abstractions": "[0.2.0-preview.2, )",
-          "AgentForge.Core": "[0.2.0-preview.2, )",
+          "AgentForge.Abstractions": "[0.3.0-preview.1, )",
+          "AgentForge.Core": "[0.3.0-preview.1, )",
           "Microsoft.Extensions.DependencyInjection": "[10.0.9, )"
         }
       },
       "agentforge.providers.openai": {
         "type": "Project",
         "dependencies": {
-          "AgentForge.Abstractions": "[0.2.0-preview.2, )",
+          "AgentForge.Abstractions": "[0.3.0-preview.1, )",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "[10.0.9, )",
           "OpenAI": "[2.14.0, )"
         }

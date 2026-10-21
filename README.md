@@ -23,22 +23,22 @@ dotnet test AgentForge.slnx --configuration Release --no-build
 
 ## Install from NuGet
 
-The current coordinated preview is `0.2.0-preview.2`. The recommended quick-start installation is:
+The next coordinated preview is prepared as `0.3.0-preview.1`; it has not been published yet. After release approval and publication, the recommended quick-start installation will be:
 
 ```powershell
-dotnet add package AgentForge.NET --version 0.2.0-preview.2
+dotnet add package AgentForge.NET --version 0.3.0-preview.1
 ```
 
 `AgentForge.NET` is a dependency-only convenience metapackage, not a separate runtime. It directly installs `AgentForge.Hosting`, `AgentForge.Tools`, and `AgentForge.Providers.OpenAI`; Core and Abstractions resolve transitively. All modular packages remain independently installable. For example:
 
 ```powershell
-dotnet add package AgentForge.Hosting --version 0.2.0-preview.2
+dotnet add package AgentForge.Hosting --version 0.3.0-preview.1
 ```
 
 The Microsoft.Extensions.AI adapter remains optional and is deliberately not included in the metapackage:
 
 ```powershell
-dotnet add package AgentForge.Adapters.MicrosoftExtensionsAI --version 0.2.0-preview.2
+dotnet add package AgentForge.Adapters.MicrosoftExtensionsAI --version 0.3.0-preview.1
 ```
 
 Applications that need contracts without the runtime can continue to reference `AgentForge.Abstractions` directly.

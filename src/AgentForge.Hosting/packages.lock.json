@@ -46,7 +46,7 @@
       "agentforge.core": {
         "type": "Project",
         "dependencies": {
-          "AgentForge.Abstractions": "[0.2.0-preview.2, )",
+          "AgentForge.Abstractions": "[0.3.0-preview.1, )",
           "Microsoft.Extensions.Logging.Abstractions": "[10.0.0, )"
         }
       },

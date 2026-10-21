@@ -19,7 +19,7 @@ $expectedPackageIds = @(
     'AgentForge.Adapters.MicrosoftExtensionsAI'
 )
 $expectedSymbolPackageIds = @($expectedPackageIds | Where-Object { $_ -ne 'AgentForge.NET' })
-$expectedVersion = '0.2.0-preview.2'
+$expectedVersion = '0.3.0-preview.1'
 $errors = [System.Collections.Generic.List[string]]::new()
 
 $resolvedPackageDirectory = [System.IO.Path]::GetFullPath($PackageDirectory)

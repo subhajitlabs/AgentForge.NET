@@ -8,8 +8,8 @@
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <LangVersion>latest</LangVersion>
-    <Version>0.2.0-preview.2</Version>
-    <PackageVersion>0.2.0-preview.2</PackageVersion>
+    <Version>0.3.0-preview.1</Version>
+    <PackageVersion>0.3.0-preview.1</PackageVersion>
     <Authors>Subhajit Labs</Authors>
     <Copyright>Copyright (c) 2026 Subhajit Labs</Copyright>
     <Product>AgentForge.NET</Product>
