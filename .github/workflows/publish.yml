@@ -297,3 +297,191 @@ jobs:
               throw "NuGet publication failed or had an ambiguous outcome for $packageId."
             }
           }
+
+  publish-030-preview1:
+    if: inputs.release_tag == 'v0.3.0-preview.1' && inputs.confirm_release == 'PUBLISH v0.3.0-preview.1'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    environment: release
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: true
+      NUGET_SOURCE: https://api.nuget.org/v3/index.json
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      EXPECTED_COMMIT: 0ac8f1205b284f74fa1f2587c7a22fa52aad73bb
+      PACKAGE_VERSION: 0.3.0-preview.1
+
+    steps:
+      - name: Download approved GitHub release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path artifacts | Out-Null
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir artifacts --pattern '*.nupkg' --pattern '*.snupkg'
+
+      - name: Verify release target, package versions, artifact set, and SHA-256 hashes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if (-not $release.prerelease -or $release.draft) {
+            throw "The GitHub release must be a published prerelease."
+          }
+
+          $tagRef = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if ($tagRef.object.type -ne 'tag') {
+            throw "Tag $env:RELEASE_TAG must be annotated."
+          }
+
+          $tagObject = gh api "repos/$env:GITHUB_REPOSITORY/git/tags/$($tagRef.object.sha)" | ConvertFrom-Json
+          if ($tagObject.object.type -ne 'commit' -or $tagObject.object.sha -ne $env:EXPECTED_COMMIT) {
+            throw "Annotated tag $env:RELEASE_TAG does not target commit $env:EXPECTED_COMMIT."
+          }
+
+          $expected = [ordered]@{
+            'AgentForge.Abstractions.0.3.0-preview.1.nupkg' = '10cee733a6c3cc7df5e309baa24c5e33c6ff7d96bc8e32a2df5d1da613b5fd68'
+            'AgentForge.Abstractions.0.3.0-preview.1.snupkg' = '5898a4f5fbaca6c8c4d8dfd77e2643dc042b903badb97d895895d8e3bc63bd71'
+            'AgentForge.Adapters.MicrosoftExtensionsAI.0.3.0-preview.1.nupkg' = '1f6496ecace00444919c361db334c0f074bcfb7f26c312a742b8a5e197877d7e'
+            'AgentForge.Adapters.MicrosoftExtensionsAI.0.3.0-preview.1.snupkg' = '3cae4c1dc0db322ea9c884778a98223715acfa0ffa25089a22c2acb0e133e2a8'
+            'AgentForge.Core.0.3.0-preview.1.nupkg' = 'dae4e50b46a1bae2d136db45b0f9757b1565e09861c31100e3373870ea66fa11'
+            'AgentForge.Core.0.3.0-preview.1.snupkg' = 'ceb48aae6aae81403c75c7e93dc4e748337821921ef15e08c7495c14f20e8465'
+            'AgentForge.Hosting.0.3.0-preview.1.nupkg' = '9756c43a2d41007e2054e2b073524b989b47fb66b5a80c3b245e68440ba1abe4'
+            'AgentForge.Hosting.0.3.0-preview.1.snupkg' = 'eac37da5fbd2837e7c72833ce3d180b2ffe4fb5b30483cf55bf425e6a32b5d76'
+            'AgentForge.NET.0.3.0-preview.1.nupkg' = '9a9aec0dbb976b5b45cd1e8d79613e5e924ae27f48191dc2fae8a15e6cb6e90f'
+            'AgentForge.Providers.OpenAI.0.3.0-preview.1.nupkg' = '33d1398a059de793f640b78afa66fe23029f073ad0133645d9bb576eba7672c7'
+            'AgentForge.Providers.OpenAI.0.3.0-preview.1.snupkg' = '5117d9ebb22347e764787699b07f07d7d8fff2ee04b7b9efb4cc819332c3a057'
+            'AgentForge.Tools.0.3.0-preview.1.nupkg' = '719c2ddf5daa868cf2c581d24dcc2bb756ea3fbff58360242f604a7effd71f06'
+            'AgentForge.Tools.0.3.0-preview.1.snupkg' = '51ef9080ebc4a5fac449d0972e21382b15e0cc6fa2d5a97b172c617e1a72fee8'
+          }
+
+          $actualFiles = @(Get-ChildItem -LiteralPath artifacts -File | Sort-Object Name)
+          $actualNames = @($actualFiles.Name)
+          $expectedNames = @($expected.Keys | Sort-Object)
+          if (Compare-Object $expectedNames $actualNames) {
+            throw 'The GitHub release asset set is not the exact approved thirteen-file set.'
+          }
+
+          foreach ($file in $actualFiles) {
+            $actualHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expected[$file.Name]) {
+              throw "SHA-256 mismatch for $($file.Name)."
+            }
+          }
+
+          $packageIds = @(
+            'AgentForge.Abstractions',
+            'AgentForge.Core',
+            'AgentForge.Hosting',
+            'AgentForge.Tools',
+            'AgentForge.Providers.OpenAI',
+            'AgentForge.Adapters.MicrosoftExtensionsAI',
+            'AgentForge.NET'
+          )
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          foreach ($packageId in $packageIds) {
+            $packagePath = Join-Path artifacts "$packageId.$env:PACKAGE_VERSION.nupkg"
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($packagePath)
+            try {
+              $nuspecEntries = @($archive.Entries | Where-Object { $_.FullName -like '*.nuspec' })
+              if ($nuspecEntries.Count -ne 1) {
+                throw "Package $packageId must contain exactly one nuspec."
+              }
+
+              $reader = [System.IO.StreamReader]::new($nuspecEntries[0].Open())
+              try {
+                [xml]$nuspec = $reader.ReadToEnd()
+              }
+              finally {
+                $reader.Dispose()
+              }
+
+              if ($nuspec.package.metadata.id -ne $packageId -or $nuspec.package.metadata.version -ne $env:PACKAGE_VERSION) {
+                throw "Package identity mismatch for $packageId."
+              }
+            }
+            finally {
+              $archive.Dispose()
+            }
+          }
+
+      - name: Check exact NuGet version collisions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageIds = @(
+            'AgentForge.Abstractions',
+            'AgentForge.Core',
+            'AgentForge.Hosting',
+            'AgentForge.Tools',
+            'AgentForge.Providers.OpenAI',
+            'AgentForge.Adapters.MicrosoftExtensionsAI',
+            'AgentForge.NET'
+          )
+
+          foreach ($packageId in $packageIds) {
+            $lowerId = $packageId.ToLowerInvariant()
+            $indexUri = "https://api.nuget.org/v3-flatcontainer/$lowerId/index.json"
+            try {
+              $index = Invoke-RestMethod -Uri $indexUri -Method Get
+              if ($index.versions -contains $env:PACKAGE_VERSION) {
+                throw "NuGet collision: $packageId $env:PACKAGE_VERSION already exists."
+              }
+            }
+            catch {
+              if ($_.Exception.Response.StatusCode.value__ -eq 404) {
+                continue
+              }
+
+              throw
+            }
+          }
+
+      - name: Acquire short-lived NuGet credential
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: subhajitlabs
+
+      - name: Publish packages and symbols in dependency order
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packages = @(
+            'AgentForge.Abstractions',
+            'AgentForge.Core',
+            'AgentForge.Tools',
+            'AgentForge.Providers.OpenAI',
+            'AgentForge.Adapters.MicrosoftExtensionsAI',
+            'AgentForge.Hosting',
+            'AgentForge.NET'
+          )
+
+          foreach ($packageId in $packages) {
+            $packagePath = Join-Path artifacts "$packageId.$env:PACKAGE_VERSION.nupkg"
+            if ($packageId -eq 'AgentForge.NET') {
+              dotnet nuget push $packagePath `
+                --source $env:NUGET_SOURCE `
+                --api-key $env:NUGET_API_KEY `
+                --no-symbols `
+                --timeout 300
+            }
+            else {
+              dotnet nuget push $packagePath `
+                --source $env:NUGET_SOURCE `
+                --api-key $env:NUGET_API_KEY `
+                --symbol-source $env:NUGET_SOURCE `
+                --symbol-api-key $env:NUGET_API_KEY `
+                --timeout 300
+            }
+            if ($LASTEXITCODE -ne 0) {
+              throw "NuGet publication failed or had an ambiguous outcome for $packageId."
+            }
+          }
